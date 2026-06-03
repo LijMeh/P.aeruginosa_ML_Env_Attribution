@@ -22,7 +22,7 @@ CladeA_OutputFile="00_data/cladeA_metadata_TestTrain.csv"
 CladeB_OutputFile="00_data/cladeB_metadata_TestTrain.csv"
 
 # Output metadata
-output_metadata="00_data/finalMetadata.csv"
+output_metadata="00_data/testTrainMetadata.csv"
 
 # ============================================================================
 # Split Test Train

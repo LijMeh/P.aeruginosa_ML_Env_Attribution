@@ -1,4 +1,9 @@
 #!/bin/bash
+# ============================================================================
+# Process Panaroo Output
+# ============================================================================
+# Processes the output from Panaroo and prepares it for model input.
+# ============================================================================
 
 eval "$(micromamba shell hook --shell bash)"
 
