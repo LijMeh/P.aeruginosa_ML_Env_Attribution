@@ -33,7 +33,7 @@ run_cluster() {
     out_dir="${filtered_fastani_output_path}/ANI_${ani_rounded}"
     mkdir -p "$out_dir"
     echo "Clustering at ANI threshold: $ani_rounded%"
-    python clusterANI.py -i "$fastani_output_file" -o "$out_dir" -t "$ani_rounded" -p 10
+    python 00_clusterANI.py -i "$fastani_output_file" -o "$out_dir" -t "$ani_rounded" -p 10
 }
 
 export -f run_cluster

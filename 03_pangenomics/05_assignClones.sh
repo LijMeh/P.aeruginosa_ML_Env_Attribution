@@ -23,4 +23,4 @@ filtered_fastani_output_path="/00_data/fastANI_output"
 # ANI threshold to cluster
 ani=99.99 
 
-python clusterANI.py -i "$fastani_output_file" -o "$filtered_fastani_output_path" -t "$ani"
+python 00_clusterANI.py -i "$fastani_output_file" -o "$filtered_fastani_output_path" -t "$ani"

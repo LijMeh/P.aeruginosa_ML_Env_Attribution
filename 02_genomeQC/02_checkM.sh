@@ -74,11 +74,11 @@ done
 # running 10K+ genomes you want to batch the files.  
 # Make sure your checkM reference data is exported as a variable `export CHECKM_DATA_PATH=/00_data/checkM`
 
-reference_file="/storage/home/hcoda1/2/emehlferber3/p-sbrown365-0/00_GitHub/PROTECT/prepInput/00_data/pAeruginosa.ms"
+reference_file="/00_data/pAeruginosa.ms"
 
 cd $destination_directory
 
-export CHECKM_DATA_PATH="/storage/home/hcoda1/2/emehlferber3/brownlab_shared/00_Resources/checkM"
+export CHECKM_DATA_PATH="/00_resources/checkM"
 
 binpath="$destination_directory/unfilt_genomes"
 output="$destination_directory/CheckM_Output"
