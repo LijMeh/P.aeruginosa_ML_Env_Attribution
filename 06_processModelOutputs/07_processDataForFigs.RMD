@@ -1,0 +1,896 @@
+---
+title: "Process Data For Figures"
+output: html_document
+date: "2026-02-02"
+---
+
+# NOTE: All comments starting with `###` are internal notes and should be adressed and removed before pushing to repo. 
+
+# Description
+- Given that a lot of the data used by the figures is shared, this script pre-processes it across the figures in order to make them easier to interpret
+- Also helpful as many of the data files are large, so pre-processing them once saves time and computational resources
+- The output will be a set of .RDS files for use across the various figures, with as much pre-processing as possible
+- This version uses the updated data from the breadth and bias pre-filtering
+
+# Load Setup and Config
+```{r setup, include=FALSE}
+library(install.load)
+
+install_load("here")
+
+source(here("00_R_configs", "config.R"))
+
+source(here("00_R_configs", "00_setup.R"))
+
+source(here("00_R_configs", "00_functions.R"))
+``` 
+
+# Load Input Data
+```{r}
+# ---- Load Phylogenetic Tree ----
+phylo_tree_30k <- read.tree(data_here("00_data", "parsnp.tree"))
+
+# ---- Load consenTrait Data ----
+consenTrait_data <- readRDS(data_here("00_data", "consentrait_depth_results.rds")) 
+
+# ---- Load ANI Data ----
+ani_data <- data_here("/00_data/fastANI_output", "ANI_clusters") %>%
+  list.files(pattern = "\\.csv$", full.names = TRUE) %>%
+  purrr::map(~{
+    df <- read_csv(.x)
+    cluster <- str_extract(basename(.x), "\\d+\\.\\d+")
+    colnames(df)[2] <- cluster
+    df
+  }) %>%
+  reduce(full_join, by = colnames(.[[1]])[1])
+
+# ---- Load Metadata ----
+metadata <- read.csv(data_here("00_data", "blockedModelInputMetadata.csv"))
+
+genomes_in_train <- metadata %>%
+  filter(split == "Train") %>%
+  pull(Genome_ID) %>%
+  unique()
+
+# ---- Load full PA 30K genome metadata ----
+pa_30k_full <- read.delim(data_here("00_data", "PA_30K_GenomeMetadata.tsv")) %>%
+  mutate(Assembly.Accession = gsub("\\.", "_", Assembly.Accession)) %>%
+  rename(Genome_ID = Assembly.Accession)
+
+# ---- Load Blocked Cross Performance Data ----
+blocked_performance_data <- data_here("00_data", "Blocked_Cross_Results") %>%
+  list.files(pattern = "_holdout_stats_newPanaroo\\.csv$", full.names = TRUE) %>%
+  set_names(~str_extract(basename(.), "^[a-z]+") %>% str_to_title()) %>%
+  purrr::map(read.csv) 
+  # Loads everything in the folder, needs to be filtered downstream
+
+# ---- Load Final Model Performance Data ----
+final_performance_data <- read.csv(data_here("00_data/model_output/full_model_results", "477_filtered_test.csv"))
+
+# ---- Load Processed SHAP Data ----
+final_iterative_genes <- readRDS(data_here("00_data/model_output", "shap_genes_annotated_blocked_model.rds"))
+
+# ---- Load Final Model ROC Data ----
+fpr_data <- read.csv(data_here("00_data/model_output/roc", "477model_fpr.csv"))
+
+tpr_data <- read.csv(data_here("00_data/model_output/roc", "477model_tpr.csv"))
+
+raw_probs <- read.csv(data_here("00_data/model_output/roc", "477model_raw_probs.csv"))
+
+# ---- Load Other Processed Data ----
+genes_of_interest <- final_iterative_genes %>% 
+    bind_rows() %>%
+    select(gene) %>%
+    distinct() %>%
+    unlist() %>%
+    as.character()
+
+###############################################################################
+###############################################################################
+###############################################################################
+###############################################################################
+###############################################################################
+########################## STOPPED HERE ####################################### 
+# (where is gene_presence_absence_summary generated?) (as of 7/1 still need
+# to check)
+# As of 7/1 added comments for changes downstream, need to go through
+###############################################################################
+###############################################################################
+###############################################################################
+###############################################################################
+###############################################################################
+
+gene_presence_absence_summary <- read.csv(
+  data_here("00_data", "model_input", "gene_presence_absence_summary.csv")
+) %>% as_tibble()
+
+# ---- Load Model Input Data ----
+model_input_filtered <- fread(
+    data_here("00_data", "model_input", "ModelInput_NoDuplicates.csv"),
+    select = c("Genome_ID", (genes_of_interest))
+)
+
+# ---- Load Iris Gene Data ----
+pa_gene_ids <- read.csv(
+  data_here("00_data", "PAO1_blast_result_new.csv"))
+
+pa_gene_ids %>% colnames()
+
+# DOES NOT include genes: group_478266 and group_643509, which don't match to PAO1 gene
+
+# ---- Load All Gene Funct/No_Funct Data ----
+iris_output_dir <- data_here("00_data", "outputs_for_graphing_chronic")
+
+# ---- Load "Final" Gene Function Data ----
+iris_output_dir_v3 <- data_here("00_data", "CCS-topgenesv3")
+
+# ---- Load Experimental Data ----
+Experimental_Metadata <- read.csv2(data_here("00_data", "Working_Experimental_Metadata_WithID.csv"))
+
+cladeData <- read.csv2(data_here("00_data", "Key Strain List (Working Library).csv"), sep = ",") %>% 
+  select(Clade, Library_ID)
+
+# ---- Load and Root Experimental Tree ----
+Experimental_Tree <- read.tree(data_here("00_data", "Experimental_iqtree_1000.contree")) %>%
+  root(outgroup = "PA7.fasta", resolve.root = TRUE)
+```
+
+# ============================================
+# Process Metadata
+# ============================================
+
+## Define "Final" Niche Mapping Used Across Figures
+```{r}
+# ---- Define Niche Mapping ----
+niche_map <- c(
+  "Bronchiectasis" = "Bronchiectasis",
+  "CF" = "Adult CF",
+  "early.CF" = "Pediatric CF",
+  "Early CF" = "Pediatric CF",
+  "Early.CF" = "Pediatric CF",
+  "Urinary" = "Urinary",
+  "Gastrointestinal" = "Gastrointestinal",
+  "Wound" = "Wound",
+  "Blood" = "Blood",
+  "Aquatic" = "Aquatic",
+  "Ocean" = "Aquatic",
+  "Hospital Environment" = "Hospital",
+  "Hospital.Environment" = "Hospital",
+  "Hospital.Enviornment" = "Hospital",
+  "Rectal/Feces" = "Fecal",
+  "Rectal-Feces" = "Fecal",
+  "Rectal.Feces" = "Fecal"
+)
+
+remap_niches <- function(niche_vector) {
+  recode(niche_vector, !!!niche_map, .default = NA_character_)
+}
+
+# ---- Apply to consenTrait Data ----
+consenTrait_data <- consenTrait_data %>%
+  mutate(Niche = remap_niches(Niche))
+
+# ---- Apply to Metadata ----
+metadata_mapped <- metadata_unmapped %>%
+  mutate(Niche = remap_niches(Niche)) %>%
+  filter(!is.na(Niche)) %>%
+  filter(Clade %in% "CladeA")
+
+# ---- Apply to SHAP data (rename list elements) ----
+final_iterative_genes %>% select(Env) %>% distinct() 
+# Already good here
+
+# ---- Helper Function: Apply Niche Mapping to Label Strings ----
+remap_labels <- function(label_string, niche_map) {
+  result <- label_string
+  for (old_name in names(niche_map)) {
+    new_name <- niche_map[[old_name]]
+    old_pattern <- paste0("'", old_name, "'")
+    new_replacement <- paste0("'", new_name, "'")
+    result <- gsub(old_pattern, new_replacement, result, fixed = TRUE)
+  }
+  return(result)
+}
+
+# ---- Apply to Performance Data (rename in True/Predicted Labels) ----
+blocked_performance_data <- lapply(blocked_performance_data, function(df) {
+  df %>%
+    mutate(
+      True.Labels = remap_labels(True.Labels, niche_map),
+      Predicted.Labels = remap_labels(Predicted.Labels, niche_map)
+    )
+})
+
+eleventhRound <- blocked_performance_data$Eleventh
+
+final_performance_data <- final_performance_data %>%
+  mutate(
+    True.Labels = remap_labels(True.Labels, niche_map),
+    Predicted.Labels = remap_labels(Predicted.Labels, niche_map)
+  )
+
+# ---- Apply to ROC Data ----
+fpr_data_long <- fpr_data %>%
+  pivot_longer(
+    cols = -X,
+    names_to = "Env",
+    values_to = "FPR"
+  )
+
+tpr_data_long <- tpr_data %>%
+  pivot_longer(
+    cols = -X,
+    names_to = "Env",
+    values_to = "TPR"
+  )
+
+# Merge FPR and TPR on X and Env
+roc_data <- fpr_data_long %>%
+  left_join(tpr_data_long, by = c("X", "Env")) %>%
+  mutate(Env = remap_niches(Env))
+
+saveRDS(roc_data, 
+        file = data_here("00_data", "Figure_Processed_Data", "477_roc_data_processed.rds"))
+
+# Rename columns in raw_probs and apply niche mapping
+
+probs_long <- raw_probs %>%
+  pivot_longer(
+    cols = -Genome_IDs,
+    names_to = "Env",
+    values_to = "Probability"
+  ) %>%
+  mutate(Env = remap_niches(Env))
+
+saveRDS(probs_long, 
+        file = data_here("00_data", "Figure_Processed_Data", "477_probs_processed.rds"))
+
+focal_env_counts <- probs_long %>%
+  group_by(Genome_IDs) %>%
+  mutate(
+    Focal_Env = Env[Probability == max(Probability)][1]
+  ) %>%
+  ungroup() %>%
+  distinct(Genome_IDs, Focal_Env) %>%
+  group_by(Focal_Env) %>%
+  summarise(Count = n(), .groups = "drop") %>%
+  arrange(desc(Count))
+```
+
+## Filter Metadata to Clade A and Map to Valid Niches
+```{r}
+saveRDS(metadata_mapped, 
+        file = data_here("00_data", "Figure_Processed_Data",  "metadata_mapped.rds"))
+
+metadata_filtered <- metadata_mapped %>% 
+  filter(Clade == "CladeA", !is.na(Niche)) %>%
+  mutate(Genome_ID = as.character(Genome_ID)) %>%
+  filter(Genome_ID %in% genomes_in_train)
+
+  # ---- Print Stats for Niche Counts ----
+niche_counts <- metadata_filtered %>%
+  group_by(Niche) %>%
+  summarise(Count = n(), .groups = 'drop') %>%
+  arrange(desc(Count))
+
+print(niche_counts)
+
+saveRDS(metadata_filtered, 
+        file = data_here("00_data", "Figure_Processed_Data", "Metadata_Filtered.rds"))
+```
+
+# ============================================
+# Figure 1
+# ============================================
+
+## Process Phylogenetic Tree Data
+```{r}
+#  ---- Clean Tip Labels ----
+phylo_tree_30k$tip.label <- gsub(".fna$", "", phylo_tree_30k$tip.label)
+
+# ---- Add Outgroup ----
+outgroup_tip <- "PA7_GCA_000017205.1_ASM1720v1_genomic"
+
+if (!(outgroup_tip %in% metadata_filtered$Genome_ID)) {
+  outgroup_row <- data.frame(
+    Genome_ID = outgroup_tip, 
+    Clade = "Outgroup", 
+    Niche = "Outgroup", 
+    Genomovar_Cluster = "Outgroup", 
+    Clone_Cluster = "Outgroup"
+  )
+  metadata_filtered <- rbind(metadata_filtered, outgroup_row)
+}
+
+# ---- Filter and Root Tree ----
+phylo_filtered_rooted <- phylo_tree_30k %>%
+  ape::keep.tip(phylo_tree_30k$tip.label[phylo_tree_30k$tip.label %in% metadata_filtered$Genome_ID]) %>%
+  root(outgroup = outgroup_tip, resolve.root = TRUE)
+
+# ---- Join Metadata to Tree ----
+
+phylo_filtered_rooted_treedata <- as.treedata(phylo_filtered_rooted)
+
+metadata_for_join <- metadata_filtered %>%
+  mutate(label = Genome_ID) %>%
+  select(label, Niche)
+
+phylo_filtered_rooted_treedata <- full_join(
+  phylo_filtered_rooted_treedata, 
+  metadata_for_join, 
+  by = "label"
+)
+
+# ---- Save Processed Phylogenetic Tree Data ----
+saveRDS(phylo_filtered_rooted_treedata, 
+        file = data_here("00_data", "Figure_Processed_Data", "phylo_filtered_rooted_treedata.RDS"))
+```
+
+## Process consenTrait Data
+```{r}
+# ---- Extract Tree and Trait Data ----
+tree <- phylo_filtered_rooted_treedata@phylo
+metadata <- as_tibble(phylo_filtered_rooted_treedata) %>%
+  filter(!is.na(label))  # Keep only tips (remove internal nodes)
+
+# Reorder metadata to match tree tip labels EXACTLY
+metadata <- metadata[match(tree$tip.label, metadata$label), ]
+
+niche_order <- c(
+  "Adult CF", "Pediatric CF", "Bronchiectasis", 
+  "Blood", "Urinary", "Fecal", "Wound",
+  "Hospital",
+  "Aquatic")
+
+# ==============================================================================
+# CONSTRAINT DEPTH ANALYSIS
+# ==============================================================================
+
+# ---- Run Analysis in Parallel ----
+message("Starting constraint depth calculations...")
+consentrait_results <- mclapply(
+  niche_order, 
+  calculate_consentrait_depth, 
+  tree = tree, 
+  metadata = metadata, 
+  mc.cores = 10
+)
+
+consentrait_results <- bind_rows(consentrait_results) %>% 
+  filter(!is.na(Mean_depth)) %>%
+  mutate(
+    P_adj = p.adjust(P_value, method = "BH"),
+    Seq_dissimilarity = 2 * Mean_depth,
+    Seq_similarity = 1 - Seq_dissimilarity,
+    Seq_similarity_pct = 100 * Seq_similarity, 
+    Seq_similarity_pct_Max = (1 - (2 * Max_depth)) * 100
+  )
+
+# ---- Display Results ----
+cat("\n=== CONSTRAINT DEPTH RESULTS ===\n")
+print(consentrait_results)
+
+consentrait_results %>% select(Niche, P_value, Seq_similarity_pct, Seq_similarity_pct_Max)
+
+saveRDS(consenTrait_data, 
+        file = data_here("00_data", "Figure_Processed_Data", "consenTrait_data.RDS"))
+```
+
+## Process ANI Data
+```{r}
+# Already processed, just re-saving for consistency
+
+saveRDS(ani_data, 
+        file = data_here("00_data", "Figure_Processed_Data", "ani_data.RDS"))
+```
+
+# ============================================
+# Figure 2
+# ============================================
+
+## Process Blocked Confusion Matrix Data
+```{r}
+# ---- Confusion Matrix from Blocked Models ----
+make_confusion_from_blocked <- function(df_blocked) {
+  # Keep only blocked models
+  df_blocked <- df_blocked %>%
+    dplyr::filter(stringr::str_detect(model, "_isolated$"))
+  
+  # Expand each row into per-isolate true/pred pairs
+  pairs_df <- purrr::map_dfr(seq_len(nrow(df_blocked)), function(i) {
+    true_envs <- stringr::str_extract_all(df_blocked$True.Labels[i], "'([^']+)'")[[1]] %>%
+      gsub("'", "", .)
+    pred_envs <- stringr::str_extract_all(df_blocked$Predicted.Labels[i], "'([^']+)'")[[1]] %>%
+      gsub("'", "", .)
+    
+    # Safety check: lengths should match
+    if (length(true_envs) != length(pred_envs)) {
+      stop(paste0(
+        "Row ", i, " has mismatched label counts: ",
+        length(true_envs), " true vs ", length(pred_envs), " pred"
+      ))
+    }
+    
+    tibble::tibble(
+      True = true_envs,
+      Pred = pred_envs
+    )
+  })
+  
+  # Use unified processing function
+  process_confusion_matrix(pairs_df)
+}
+
+cm_blocked <- make_confusion_from_blocked(eleventhRound)
+
+# ---- Define environment order ----
+env_labels <- c(
+  "Aquatic", "Hospital",
+  "Adult CF", "Pediatric CF", "Bronchiectasis", "Blood", "Urinary", "Fecal", "Wound"
+)
+
+accuracy_df <- calculate_accuracy_metrics(cm_blocked, env_labels)
+
+# ---- Save Processed Blocked Confusion Matrix Data ----
+saveRDS(list(
+  confusion_matrix = cm_blocked,
+  accuracy_metrics = accuracy_df
+),
+file = data_here("00_data", "Figure_Processed_Data", "blocked_confusion_matrix_data.RDS"))
+```
+
+## Process "Final" Model Confusion Matrix Data 
+```{r}
+# ---- Confusion Matrix from Single Model Row ----
+make_confusion_from_final <- function(df_row) {
+  # Validation
+  if (!is.data.frame(df_row)) {
+    stop("df_row must be a data frame")
+  }
+  if (nrow(df_row) == 0) {
+    stop("df_row has 0 rows; please provide a pre-filtered data frame with one model row")
+  }
+  if (nrow(df_row) > 1) {
+    stop("df_row has more than one row; please pre-filter to a single model row")
+  }
+  
+  # Extract labels from the single row
+  true_envs <- stringr::str_extract_all(df_row$True.Labels[1], "'([^']+)'")[[1]] %>%
+    gsub("'", "", .)
+  pred_envs <- stringr::str_extract_all(df_row$Predicted.Labels[1], "'([^']+)'")[[1]] %>%
+    gsub("'", "", .)
+  
+  # Safety check: lengths should match
+  if (length(true_envs) != length(pred_envs)) {
+    stop(paste0(
+      "Selected model row has mismatched label counts: ",
+      length(true_envs), " true vs ", length(pred_envs), " pred"
+    ))
+  }
+  
+  pairs_df <- tibble::tibble(
+    True = true_envs,
+    Pred = pred_envs
+  )
+  
+  # Use unified processing function
+  process_confusion_matrix(pairs_df)
+}
+
+cm_final <- make_confusion_from_final(final_performance_data)
+
+accuracy_df_final <- calculate_accuracy_metrics(cm_final, env_labels)
+
+final_performance_stats <- final_performance_data %>% select(-True.Labels, -Predicted.Labels)
+
+# ---- Save Processed Final Confusion Matrix Data ----
+saveRDS(list(
+  stats = final_performance_stats,
+  confusion_matrix = cm_final,
+  accuracy_metrics = accuracy_df_final
+),
+file = data_here("00_data", "Figure_Processed_Data", "Final_Model_Performance_Data_Processed.RDS"))
+```
+
+
+# ============================================
+# Figure 3
+# ============================================
+
+## Categorize Genes in SHAP Data
+```{r}
+# ---- Merge SHAP Data Across Niches ----
+final_iterative_genes
+
+# ---- Check that all clusters have the same annotation ----
+annotationConsensus <- final_iterative_genes %>%
+    bind_rows() %>%
+    group_by(aa_cluster) %>%
+    mutate(Annotation_Consensus = n_distinct(Annotation_Inferred) == 1) %>%
+    ungroup() %>%
+    select(aa_cluster, Annotation_Inferred, Annotation_Consensus) %>%
+    filter(!Annotation_Consensus)
+
+annotationConsensus # Should be 0 rows
+
+# ---- Map Functional Categories and Aggregate Counts ----
+categorize_all_genes <- function(df, anno_col = "Annotation_Inferred") {
+  out_list <- lapply(df[[anno_col]], categorize_two_tier_per_part) 
+  # See 00_functions.R for function definition
+  out_df <- bind_rows(out_list, .id = "RowID") %>%
+    mutate(RowID = as.integer(RowID))
+  
+  df_out <- df %>%
+    mutate(RowID = row_number()) %>%
+    left_join(out_df, by = "RowID") %>%
+    select(-RowID)
+  
+  return(df_out)
+}
+
+flat_df_annotated <- categorize_all_genes(final_iterative_genes)
+
+flat_df_annotated_gene_names <- flat_df_annotated %>%
+  group_by(aa_cluster) %>%
+  mutate(
+    # Find the Non.unique.Gene.name of the longest sequence (aa_length) in the cluster
+    cluster_gene_name = {
+      longest_idx <- which.max(aa_length)
+      non_blank_name <- Non.unique.Gene.name[longest_idx]
+      if (length(longest_idx) > 0 && !is.na(non_blank_name) && trimws(non_blank_name) != "") {
+        non_blank_name
+      } else {
+        NA_character_
+      }
+    },
+    # Use cluster gene name if current row's gene name is NA or empty
+    Non.unique.Gene.name = case_when(
+      is.na(Non.unique.Gene.name) | trimws(Non.unique.Gene.name) == "" ~ cluster_gene_name,
+      TRUE ~ Non.unique.Gene.name
+    )
+  ) %>%
+  ungroup() %>%
+  select(-cluster_gene_name)
+
+# ---- Save Annotated SHAP Data ----
+saveRDS(flat_df_annotated, 
+        file = data_here("00_data", "Figure_Processed_Data", "flat_df_annotated_SHAP_data.RDS"))
+
+saveRDS(flat_df_annotated_gene_names, 
+        file = data_here("00_data", "Figure_Processed_Data", "flat_df_annotated_gene_names_SHAP_data.RDS"))
+```
+
+## Export Annotated SHAP Data for genes (per ENV)
+```{r}
+unique_envs <- flat_df_annotated_gene_names$Env %>% unique()
+
+for (Envs in unique_envs) {
+  niche_data <- flat_df_annotated_gene_names %>%
+    filter(Env == Envs) %>%
+    arrange(desc(mean_abs_shap))
+  filename <- data_here("00_data", 
+    "Figure_Processed_Data", 
+    "Processed_Final_SHAP_Per_ENV", 
+    "Bias_Filtered_Features_UpdatedClusters_Annotated", 
+    paste0("flat_df_annotated_", Envs, ".csv"))
+  write.csv(niche_data, filename, row.names = FALSE)
+}
+```
+
+## Process Breadth Data
+```{r}
+### I think we don't use this anymore. DOUBLE CHECK.
+
+final_iterative_genes_breadth <- final_iterative_genes %>%
+  mutate(
+    Relevant_Breadth = case_when(
+      Net_Predictive_Value > 0 ~ breadth_present,  # Positive = presence expected
+      Net_Predictive_Value < 0 ~ breadth_absent,   # Negative = absence expected
+      TRUE ~ NA_real_  # Zero/neutral case
+    )
+  ) %>%
+  select(gene, mean_shap_pres, mean_shap_abs, breadth_present, breadth_absent, mean_abs_shap, Net_Predictive_Value, Relevant_Breadth, Env)
+
+full_model_breadth_data %>% arrange(desc(mean_abs_shap)) %>%
+    select(gene, mean_shap_pres, mean_shap_abs, breadth_present, breadth_absent, mean_abs_shap)
+
+top_477_genes_full <- full_model_breadth_data %>% 
+  arrange(desc(mean_abs_shap)) %>%
+  distinct(gene, .keep_all = TRUE) %>%
+  slice(1:477) %>%
+  select(gene, mean_shap_pres, mean_shap_abs, breadth_present, breadth_absent)
+
+top_477_genes_full_filtered <- full_model_breadth_data %>% 
+    filter(gene %in% top_477_genes_full$gene) %>%
+    arrange(desc(mean_abs_shap)) %>%
+    select(gene, mean_shap_pres, mean_shap_abs, breadth_present, breadth_absent) %>%
+    mutate(
+      # Calculate Net Predictive Value
+      Net_Predictive_Value = mean_shap_pres - mean_shap_abs,
+      # Select appropriate breadth metric based on sign of NPV
+      Relevant_Breadth = case_when(
+        Net_Predictive_Value > 0 ~ breadth_present,  # Positive = presence expected
+        Net_Predictive_Value < 0 ~ breadth_absent,   # Negative = absence expected
+        TRUE ~ NA_real_  # Zero/neutral case
+      )
+    )
+
+top_477_genes_full_filtered %>% select(Relevant_Breadth) %>% summary()
+
+final_iterative_genes_breadth %>% select(Relevant_Breadth) %>% summary()
+
+processed_genomovar_breadth <- final_iterative_genes_breadth %>%
+  mutate(ModelType = "Iterative")
+
+processed_genomovar_breadth_full <- top_477_genes_full_filtered %>%
+  mutate(ModelType = "Full")
+
+processed_genomovar_breadth_combined <- bind_rows(processed_genomovar_breadth, processed_genomovar_breadth_full)
+
+saveRDS(processed_genomovar_breadth_combined, 
+        file = data_here("00_data", "Figure_Processed_Data", "processed_genomovar_breadth_combined.RDS"))
+
+```
+
+## Assign variants as Mut or WT
+```{r}
+gene_info <- pa_gene_ids %>%
+ mutate(Variant_Type = ifelse(PID == 100 & Query_Cov == 100, "WT", "Mut"))
+
+saveRDS(gene_info, 
+        file = data_here("00_data", "Figure_Processed_Data", "gene_variant_PA_Annotations.rds"))
+```
+
+# ============================================
+# Figure 4
+# ============================================
+
+## Calculate Gene Variability
+```{r}
+### I'm pretty sure we don't use this, if so can be removed. CHECK THIS. 
+
+# ---- Prepare Data for Variability Plot ----
+niche_groups <- list(
+  Chronic = c("Adult CF", "Pediatric CF", "Bronchiectasis"),
+  Acute = c("Fecal", "Blood", "Urinary", "Wound")
+)
+
+variability_plot_data <- calculate_variability_plot_data(
+  flat_df_annotated,
+  niche_groups,
+  min_niches_per_group = 1,
+  require_consensus = "other" #changed from "all"
+)
+
+# ---- Join Gene Names to Variability Data ----
+variability_plot_data <- variability_plot_data %>%
+  left_join(
+    flat_df_annotated_gene_names %>%
+      select(gene, aa_cluster, Non.unique.Gene.name) %>%
+      distinct(gene, .keep_all = TRUE),
+    by = "gene"
+  )
+
+# ---- Save Variability Data ----
+saveRDS(variability_plot_data, 
+        file = data_here("00_data", "Figure_Processed_Data", "variability_plot_data.RDS"))
+
+# ---- Identify "top" genes to label ----
+genes_to_label <- variability_plot_data %>%
+  arrange(desc(abs(NPV_difference))) %>%
+  filter(abs(NPV_difference) >= 0.055) %>%
+  distinct(gene, Group, .keep_all = TRUE) %>%
+  select(gene, Group, Non.unique.Gene.name, Annotation_Inferred, NPV_difference, variability_focal)
+
+genes_to_label %>% print(n = Inf)
+
+# ---- Save Genes to Label ----
+saveRDS(genes_to_label, 
+        file = data_here("00_data", "Figure_Processed_Data", "genes_to_label_variability_plot.RDS"))
+```
+
+## Load Iris Gene Data
+```{r}
+### These need different names and the paths need to be updated to the new data location.
+
+# Get all subdirectories (which are PA_IDs)
+pa_id_dirs <- list.dirs(iris_output_dir, recursive = FALSE, full.names = TRUE)
+
+# Load all _funct_no_funct_alt.csv files and add PA_ID column
+iris_gene_funct_data <- purrr::map_dfr(pa_id_dirs, function(dir_path) {
+  pa_id <- basename(dir_path)  # Extract PA ID from directory name
+  file_path <- file.path(dir_path, paste0(pa_id, "_funct_no_funct_alt.csv"))
+  
+  if (file.exists(file_path)) {
+    read.csv(file_path) %>%
+      mutate(PA_ID = pa_id, .before = 1)
+  } else {
+    NULL
+  }
+}) %>%
+  bind_rows()
+
+saveRDS(iris_gene_funct_data, 
+        file = data_here("00_data", "Figure_Processed_Data", "chronic_acute_gene_funct_data.RDS"))
+
+# Get all subdirectories (which are PA_IDs) for the v3 data ("final" set of genes for plot)
+pa_id_dirs_v3 <- list.dirs(iris_output_dir_v3, recursive = FALSE, full.names = TRUE)
+
+# Load all _funct_no_funct_alt.csv files and add PA_ID column for v3 data
+iris_gene_funct_data_v3 <- purrr::map_dfr(pa_id_dirs_v3, function(dir_path) {
+  pa_id <- basename(dir_path)  # Extract PA ID from directory name
+  file_path <- file.path(dir_path, paste0(pa_id, "_funct_no_funct_alt.csv"))
+
+  if (file.exists(file_path)) {
+    read.csv(file_path) %>%
+      mutate(PA_ID = pa_id, .before = 1)
+  } else {
+    NULL
+  }
+}) %>%
+  bind_rows()
+
+saveRDS(iris_gene_funct_data_v3, 
+        file = data_here("00_data", "Figure_Processed_Data", "chronic_acute_gene_funct_data_v3.RDS"))
+```
+
+# ============================================
+# Figure 5
+# ============================================
+
+## Process Data for the Phylogenetic Tree
+```{r}
+# ---- Helper Function: Clean Names ----
+clean_name <- function(x) {
+  x %>%
+    gsub(".fasta", "", .) %>%
+    gsub(" = ", "_", .) %>%
+    gsub("=", "_", .) %>%
+    gsub("/|\\(.*\\)| grande colonie", "", .) %>%
+    gsub("\\s+|-|\\.", "", .) %>%
+    toupper()
+}
+
+# ---- Match Tree Tips to Metadata ----
+tree_names_clean <- clean_name(Experimental_Tree$tip.label)
+metadata_names_clean <- clean_name(Experimental_Metadata$Original.ID)
+overlap <- intersect(tree_names_clean, metadata_names_clean)
+
+cat("Number of overlapping tips/metadata:", length(overlap), "\n")
+
+# Prune tree to overlapping tips
+pruned_tree <- ape::drop.tip(Experimental_Tree, Experimental_Tree$tip.label[!tree_names_clean %in% overlap])
+
+# ---- Assign Environment Categories ----
+Experimental_Metadata <- Experimental_Metadata %>%
+  filter(clean_name(Original.ID) %in% overlap)
+
+# ---- Merge in Growth Curve Fits ----
+Experimental_Metadata <- Experimental_Metadata %>%
+  left_join(gc_fits, by = c("Library_ID" = "strain"))
+
+Experimental_Metadata %>% select(Genome, Env, r) %>% print(n = Inf)
+
+# ---- Match Tree to Metadata ----
+Experimental_clean_name_metadata <- Experimental_Metadata %>%
+  mutate(treeNames = clean_name(Original.ID))
+
+# ---- Prune tree to final filtered metadata ----
+filtered_tips_clean <- clean_name(Experimental_clean_name_metadata$Original.ID)
+
+filtered_tree <- ape::drop.tip(
+  pruned_tree, 
+  pruned_tree$tip.label[!clean_name(pruned_tree$tip.label) %in% filtered_tips_clean]
+)
+
+# ---- Clean Names for Tree and Metadata ----
+filtered_tree$tip.label <- clean_name(filtered_tree$tip.label)
+Experimental_clean_name_metadata$treeNames <- clean_name(Experimental_clean_name_metadata$treeNames)
+
+Experimental_clean_name_metadata %>% select(Genome, Env, r) %>% print(n = Inf)
+
+# ---- Update Col names ----
+Experimental_clean_name_metadata <- Experimental_clean_name_metadata %>%
+  rename(
+    "Elastase Production"    = ecr.n,
+    "Biofilm Fraction"       = bfrac,
+    "Growth Rate"            = r,
+  )
+
+# ---- Save Processed Tree ----
+saveRDS(filtered_tree, 
+        file = data_here("00_data", "Figure_Processed_Data", "Iterative_Approach", "filtered_Experimental_tree.RDS"))
+```
+
+## Process Data for PCA on Phenotype
+```{r}
+### I don't think I use the PCA results here anymore, probably remove, but check first. 
+
+# ---- Phylogenetic Clustering ----
+phylo_dist <- cophenetic(filtered_tree)
+hc <- hclust(as.dist(phylo_dist), method = "average")
+clusters <- cutree(hc, k = 5)
+
+# Add cluster assignments to metadata
+Experimental_clean_name_metadata$cluster <- clusters[base::match(
+  clean_name(Experimental_clean_name_metadata$Original.ID), 
+  clean_name(names(clusters))
+)]
+
+# ---- Perform PCA ----
+Experimental_clean_name_metadata %>% colnames() %>% head(n = 90) 
+
+cols <- c("Elastase Production", 
+          "Biofilm Fraction",           
+           "Growth Rate"
+          )
+
+pca_data <- Experimental_clean_name_metadata[, cols] %>% na.omit()
+pca_res <- prcomp(pca_data, scale. = TRUE)
+
+# ---- Save PCA Results and Metadata ----
+saveRDS(pca_res, 
+        file = data_here("00_data", "Figure_Processed_Data", "pca_res_Experimental_phenotypes.RDS"))  
+
+saveRDS(Experimental_clean_name_metadata, 
+        file = data_here("00_data", "Figure_Processed_Data", "filtered_Experimental_metadata.RDS"))
+```
+
+## Summarize Stats for Paper
+```{r}
+### This should probably go in a different script, `Fig4_Experimental_Phenotype_Stats.R` or similar
+
+# Adjust if your metadata object has a different name
+df <- filtered_metadata
+
+# Standardize environment labels if needed
+df <- df %>%
+  mutate(Env = recode(Env, "Non-CF Human Infection" = "Acute Human Infection"))
+
+# Use your actual column names here
+traits <- c(
+  "Biofilm Fraction",
+  "Growth Rate",
+  "Elastase Production"
+)
+
+# Make sure traits are numeric
+df <- df %>%
+  mutate(across(all_of(traits), as.numeric))
+
+# Summary by environment
+env_summary <- df %>%
+  group_by(Env) %>%
+  summarise(
+    n = sum(complete.cases(across(all_of(traits)))),
+    biofilm_mean = mean(`Biofilm Fraction`, na.rm = TRUE),
+    biofilm_sd   = sd(`Biofilm Fraction`, na.rm = TRUE),
+    growth_mean  = mean(`Growth Rate`, na.rm = TRUE),
+    growth_sd    = sd(`Growth Rate`, na.rm = TRUE),
+    elastase_mean = mean(`Elastase Production`, na.rm = TRUE),
+    elastase_sd   = sd(`Elastase Production`, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  arrange(Env)
+
+# Optional: summaries for the specific statements you quoted
+cf_summary <- env_summary %>% filter(grepl("CF", Env))
+noncf_summary <- env_summary %>% filter(!grepl("CF", Env))
+aquatic_summary <- env_summary %>% filter(grepl("Aquatic", Env))
+
+# Print tables
+print(env_summary)
+print(cf_summary)
+print(noncf_summary)
+print(aquatic_summary)
+
+# If you want the exact phrasing helper:
+env_summary %>%
+  transmute(
+    Env,
+    biofilm_txt = sprintf("biofilm fraction (mean = %.3f, n = %d)", biofilm_mean, n),
+    growth_txt = sprintf("growth rate (mean = %.3f, n = %d)", growth_mean, n),
+    elastase_txt = sprintf("elastase activity (mean = %.3f, n = %d)", elastase_mean, n)
+  ) %>%
+  print(n = Inf)
+```

@@ -1,0 +1,19 @@
+Animal: Animal
+Aquatic: Aquatic
+Blood: Blood
+Bronchiectasis: Bronchiectasis
+Built.Environment: Human Environment
+Burn: Other Clinical
+CF: CF
+Eye: Other Clinical
+Hospital.Environment: Hospital Environment
+Human_Environment: Built Environment
+Lung: Other Lung
+Ocean: Other Environmental
+Pneumonia: Other Clinical
+Rectal/Feces: Rectal-Feces
+Terrestrial: Other Environmental
+Urinary: Urinary
+Waste.Water: Human Environment
+Wound: Wound
+early.CF: Early CF

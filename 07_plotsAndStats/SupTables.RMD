@@ -1,0 +1,445 @@
+---
+title: "Make Supplemental Tables/CSV Files"
+output: html_document
+date: "2026-04-22"
+---
+
+# Description
+- This code produces the Supplemental Tables for the CCS paper.     
+
+# Load Setup and Figure Config 
+```{r setup, include=FALSE}
+library(install.load)
+
+install_load("here")
+
+source(here("config.R"))
+
+source(here("Iterative_Model_Approach", "00_setup.R"))
+
+source(here("Iterative_Model_Approach", "00_functions.R"))
+``` 
+
+# Load Data 
+```{r}
+flat_df_annotated_gene_names <- readRDS(
+  file = data_here("00_data", "Figure_Processed_Data", "flat_df_annotated_gene_names_SHAP_data.RDS")
+)
+
+pa_gene_ids <- read.csv(
+  data_here("00_data", "PAO1_blast_result_new.csv")) %>% as.tibble()
+
+gene_info <- readRDS(
+  file = data_here("00_data", "Figure_Processed_Data", "gene_variant_PA_Annotations.rds")
+)
+```
+
+# Sup Table 1: Metadata for all 477 Genes (CSV file)
+```{r}
+# Check structure first
+nrow(flat_df_annotated_gene_names)  # Total rows
+n_distinct(flat_df_annotated_gene_names$gene)  # Unique genes
+
+# Create wider format with Env-specific SHAP columns
+# Keep only the specified metadata columns + SHAP values
+wide_df_gene_data <- flat_df_annotated_gene_names %>%
+  select(gene, Env, 
+         mean_shap_pres, mean_shap_abs, mean_abs_shap,
+         study_bias, aa_cluster, aa_length, longest_aa,
+         Non.unique.Gene.name, Annotation, Annotation_Inferred,
+         gene_name_cluster_inferred, Level1, Level2) %>%
+  group_by(gene) %>%
+  # Take first value of metadata columns per gene
+  mutate(across(c(study_bias, aa_cluster, aa_length, longest_aa,
+                  Non.unique.Gene.name, Annotation, Annotation_Inferred,
+                  gene_name_cluster_inferred, Level1, Level2),
+               first)) %>%
+  ungroup() %>%
+  # Now pivot only SHAP columns by Env
+  pivot_wider(
+    id_cols = c(gene, study_bias, aa_cluster, aa_length, longest_aa,
+                Non.unique.Gene.name, Annotation, Annotation_Inferred,
+                gene_name_cluster_inferred, Level1, Level2),
+    names_from = "Env",
+    values_from = c("mean_shap_pres", "mean_shap_abs", "mean_abs_shap"),
+    names_sep = "_"
+  )
+
+# VERIFICATION
+nrow(wide_df_gene_data)  # Should be 477
+n_distinct(wide_df_gene_data$gene)  # Should be 477
+
+# Rename columns and drop unwanted ones
+wide_df_gene_data_named <- wide_df_gene_data %>%
+  rename(
+    Protein_Variant_ID = gene,
+    Gene_Name = gene_name_cluster_inferred,
+    Functional_Annotation = Annotation_Inferred,
+    Protein_Length = aa_length,
+    Protein_Cluster = aa_cluster,
+    Longest_Protein_in_Cluster = longest_aa
+  ) %>%
+  # Rename SHAP columns for each environment
+  rename_with(~str_replace(., "mean_shap_pres_", "Mean_SHAP_FeaturePresent_"), 
+              starts_with("mean_shap_pres_")) %>%
+  rename_with(~str_replace(., "mean_shap_abs_", "Mean_SHAP_FeatureAbsent_"), 
+              starts_with("mean_shap_abs_")) %>%
+  rename_with(~str_replace(., "mean_abs_shap_", "Mean_Absolute_SHAP_Value_"), 
+              starts_with("mean_abs_shap_")) %>%
+  # Keep only the columns we want
+  select(Protein_Variant_ID, Gene_Name, Functional_Annotation, Protein_Length, 
+         Protein_Cluster, Longest_Protein_in_Cluster,
+         starts_with("Mean_SHAP_FeaturePresent_"),
+         starts_with("Mean_SHAP_FeatureAbsent_"),
+         starts_with("Mean_Absolute_SHAP_Value_"))
+
+# Merge with gene_info
+wide_df_gene_data_named_merged <- wide_df_gene_data_named %>%
+  left_join(
+    gene_info %>%
+      select(Prot_acc, Locus.Tag, Variant_Type, Gene.Name, PID, Aln_length, Query_Cov) %>%
+      rename(PA_Gene_ID = Locus.Tag),
+    by = c("Protein_Variant_ID" = "Prot_acc")
+  ) %>%
+  # Reorder columns to put new columns right after Protein_Variant_ID
+  select(Protein_Variant_ID, PA_Gene_ID, Variant_Type, 
+         Gene.Name, Functional_Annotation, Protein_Length,
+         Protein_Cluster, Longest_Protein_in_Cluster, 
+         PID, Aln_length, Query_Cov,
+         starts_with("Mean_SHAP_FeaturePresent_"),
+         starts_with("Mean_SHAP_FeatureAbsent_"),
+         starts_with("Mean_Absolute_SHAP_Value_")) %>%
+    rename(PA_Gene_Name = Gene.Name) %>%
+    rename(Alignment_Length = Aln_length) %>%
+    rename(Query_Coverage = Query_Cov) %>%
+    rename(Percent_Identity = PID) %>%
+    # Replace empty strings and any missing values with NA
+    mutate(across(everything(), ~ifelse(. == "" | is.na(.), NA, as.character(.)))) %>%
+    # Tag genes as Defined or Hypothetical
+    mutate(Gene_Type = if_else(
+      str_starts(Protein_Variant_ID, "group") & is.na(PA_Gene_Name),
+      "Hypothetical",
+      "Defined"
+    ))
+
+# Verify
+nrow(wide_df_gene_data_named_merged)
+
+# Count NA values in PA_Gene_Name where Protein_Variant_ID starts with "group"
+# Count unique PA_Gene_IDs (or count NA entries individually)
+na_count_group_genes <- wide_df_gene_data_named_merged %>%
+  filter(str_starts(Protein_Variant_ID, "group")) %>%
+  filter(is.na(PA_Gene_Name)) %>%
+  group_by(PA_Gene_ID, .add = FALSE) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  mutate(count = if_else(is.na(PA_Gene_ID), n, 1)) %>%
+  summarise(total = sum(count)) %>%
+  pull(total)
+
+na_count_group_genes
+
+# Count "group" genes in top 10% of ANY Mean_Absolute_SHAP_Value column
+# Calculate 90th percentile for each Mean_Absolute_SHAP_Value column
+group_genes_top10_percent <- wide_df_gene_data_named_merged %>%
+  filter(str_starts(Protein_Variant_ID, "group")) %>%
+  filter(is.na(PA_Gene_Name)) %>%
+  select(Protein_Variant_ID, starts_with("Mean_Absolute_SHAP_Value_")) %>%
+  pivot_longer(-Protein_Variant_ID, 
+               names_to = "shap_column", 
+               values_to = "shap_value") %>%
+  mutate(shap_value = as.numeric(shap_value)) %>%
+  left_join(
+    wide_df_gene_data_named_merged %>%
+      select(starts_with("Mean_Absolute_SHAP_Value_")) %>%
+      pivot_longer(everything(),
+                   names_to = "shap_column",
+                   values_to = "value") %>%
+      mutate(value = as.numeric(value)) %>%
+      group_by(shap_column) %>%
+      summarise(threshold = quantile(value, 0.9, na.rm = TRUE), .groups = "drop"),
+    by = "shap_column"
+  ) %>%
+  filter(!is.na(shap_value) & shap_value >= threshold) %>%
+  distinct(Protein_Variant_ID) %>%
+  nrow()
+
+group_genes_top10_percent
+
+# SANITY CHECK: Show counts per environment
+sanity_check <- wide_df_gene_data_named_merged %>%
+  filter(str_starts(Protein_Variant_ID, "group")) %>%
+  filter(is.na(PA_Gene_Name)) %>%
+  select(Protein_Variant_ID, starts_with("Mean_Absolute_SHAP_Value_")) %>%
+  pivot_longer(-Protein_Variant_ID, 
+               names_to = "shap_column", 
+               values_to = "shap_value") %>%
+  mutate(shap_value = as.numeric(shap_value)) %>%
+  left_join(
+    wide_df_gene_data_named_merged %>%
+      select(starts_with("Mean_Absolute_SHAP_Value_")) %>%
+      pivot_longer(everything(),
+                   names_to = "shap_column",
+                   values_to = "value") %>%
+      mutate(value = as.numeric(value)) %>%
+      group_by(shap_column) %>%
+      summarise(threshold = quantile(value, 0.9, na.rm = TRUE), 
+                .groups = "drop"),
+    by = "shap_column"
+  ) %>%
+  mutate(in_top10 = !is.na(shap_value) & shap_value >= threshold) %>%
+  group_by(shap_column) %>%
+  summarise(n_group_genes_in_top10 = sum(in_top10, na.rm = TRUE),
+            .groups = "drop")
+
+sanity_check
+
+# Total group genes with NA PA_Gene_Name
+total_group_genes_na <- wide_df_gene_data_named_merged %>%
+  filter(str_starts(Protein_Variant_ID, "group")) %>%
+  filter(is.na(PA_Gene_Name)) %>%
+  distinct(Protein_Variant_ID) %>%
+  nrow()
+
+total_group_genes_na
+
+# Save as CSV
+write.csv(
+  wide_df_gene_data_named_merged %>%
+    mutate(Avg_Mean_Absolute_SHAP = rowMeans(
+      sapply(select(., starts_with("Mean_Absolute_SHAP_Value_")), as.numeric),
+      na.rm = TRUE
+    )) %>%
+    arrange(desc(Avg_Mean_Absolute_SHAP)) %>%
+    select(-Avg_Mean_Absolute_SHAP) %>%
+    relocate(Gene_Type, .after = Protein_Variant_ID),
+  file = data_here("00_data", "Figures", "Sup_Table_1_Gene_Metadata.csv"),
+  row.names = FALSE
+)
+
+pa_gene_ids %>% filter(Locus.Tag %in% c("PA2591"))
+
+gene_info %>% filter(Locus.Tag %in% c("PA2591"))
+```
+
+## Sup Table 4: Stats for Experimental Strains (CSV file)
+```{r}
+filtered_experimental_metadata <- readRDS(
+  data_here("00_data", "Figure_Processed_Data", "filtered_experimental_metadata.RDS")
+)
+
+# Adjust if your metadata object has a different name
+df <- filtered_experimental_metadata
+
+# Standardize environment labels if needed
+df <- df %>%
+  mutate(Env = recode(Env, "Non-CF Human Infection" = "Acute Human Infection"))
+
+# Use your actual column names here
+traits <- c(
+  "Biofilm Fraction",
+  "Growth Rate",
+  "Elastase Production"
+)
+
+# Make sure traits are numeric
+df <- df %>%
+  mutate(across(all_of(traits), as.numeric))
+
+# Exact-n descriptive statistics by environment and trait.
+# Each row represents the complete-case sample size used for that trait within that environment.
+stats_long <- df %>%
+  select(Env, all_of(traits)) %>%
+  pivot_longer(
+    cols = all_of(traits),
+    names_to = "Trait",
+    values_to = "Value"
+  ) %>%
+  group_by(Env, Trait) %>%
+  summarise(
+    n_exact = sum(!is.na(Value)),
+    mean = mean(Value, na.rm = TRUE),
+    sd = sd(Value, na.rm = TRUE),
+    se = ifelse(n_exact > 0, sd / sqrt(n_exact), NA_real_),
+    ci_low = ifelse(n_exact > 1, mean + qt(0.025, df = n_exact - 1) * se, NA_real_),
+    ci_high = ifelse(n_exact > 1, mean + qt(0.975, df = n_exact - 1) * se, NA_real_),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Trait = factor(Trait, levels = traits),
+    Env = factor(Env)
+  ) %>%
+  arrange(Trait, Env)
+
+# Wide summary for easy manuscript/table use.
+env_summary <- stats_long %>%
+  select(Env, Trait, n_exact, mean, sd, se, ci_low, ci_high) %>%
+  pivot_wider(
+    names_from = Trait,
+    values_from = c(n_exact, mean, sd, se, ci_low, ci_high),
+    names_sep = "__"
+  ) %>%
+  arrange(Env)
+
+# Methods metadata for Nature-style reporting.
+stats_methods_summary <- tibble::tibble(
+  Analysis = c(
+    "Descriptive summaries by environment",
+    "Error bars",
+    "Replicate definition",
+    "Exact n reporting"
+  ),
+  Details = c(
+    "Mean, SD, SE, and 95% CI computed separately for each trait within each environment",
+    "95% confidence intervals from the t distribution (two-sided)",
+    "Each genome / isolate is treated as one independent replicate",
+    "Exact complete-case n is reported for each trait/environment combination"
+  )
+)
+
+# Optional convenience tables for manuscript wording.
+cf_summary <- stats_long %>% filter(grepl("CF", Env))
+noncf_summary <- stats_long %>% filter(!grepl("CF", Env))
+aquatic_summary <- stats_long %>% filter(grepl("Aquatic", Env))
+
+# Exact replicate counts per environment (one row per Env).
+env_n_summary <- df %>%
+  group_by(Env) %>%
+  summarise(n_env = n(), .groups = "drop") %>%
+  arrange(Env)
+
+# Print concise, publication-useful tables.
+print(env_n_summary, n = Inf)
+print(stats_long, n = Inf)
+print(env_summary, n = Inf)
+print(stats_methods_summary, n = Inf)
+
+# Export tables as CSV files.
+stats_export_dir <- "00_data/Figure_Processed_Data"
+dir.create(stats_export_dir, recursive = TRUE, showWarnings = FALSE)
+write_csv(env_n_summary, file.path(stats_export_dir, "paper_stats_n_per_env.csv"))
+write_csv(stats_long, file.path(stats_export_dir, "paper_stats_long_summary.csv"))
+write_csv(env_summary, file.path(stats_export_dir, "paper_stats_wide_summary.csv"))
+write_csv(stats_methods_summary, file.path(stats_export_dir, "paper_stats_methods_summary.csv"))
+
+# Keep the helper output if you want plain-text manuscript phrasing.
+stats_long %>%
+  transmute(
+    Env,
+    Trait,
+    summary_txt = sprintf("%s: mean = %.3f, SD = %.3f, n = %d", Trait, mean, sd, n_exact)
+  ) %>%
+  print(n = Inf)
+```
+
+### I Need to figure out where I'm saving all the stats for Data S_4
+
+## Sup Tables: Fig3 Top Genes Statistics
+
+### Load exported model statistics objects and export as CSVs (separate for each analysis)
+```{r}
+library(here)
+
+# Define output directory for supplementary table CSVs
+output_dir <- data_here("00_data", "Figure_Processed_Data")
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+# ---- All Data Analysis ----
+model_details_all_data <- readRDS(
+  data_here("00_data", "Figure_Processed_Data", "model_details_All_Data.RDS")
+)
+n_per_group_all_data <- readRDS(
+  data_here("00_data", "Figure_Processed_Data", "n_per_group_All_Data.RDS")
+)
+pairwise_stats_all_data <- readRDS(
+  data_here("00_data", "Figure_Processed_Data", "pairwise_stats_All_Data.RDS")
+)
+
+write.csv(
+  model_details_all_data,
+  file = file.path(output_dir, "SupTable_Model_Details_All_Data.csv"),
+  row.names = FALSE
+)
+write.csv(
+  n_per_group_all_data,
+  file = file.path(output_dir, "SupTable_N_Per_Group_All_Data.csv"),
+  row.names = FALSE
+)
+write.csv(
+  pairwise_stats_all_data,
+  file = file.path(output_dir, "SupTable_Pairwise_Stats_All_Data.csv"),
+  row.names = FALSE
+)
+
+# ---- No Contig Splits Analysis ----
+model_details_no_contig <- readRDS(
+  data_here("00_data", "Figure_Processed_Data", "model_details_No_Contig_Splits.RDS")
+)
+n_per_group_no_contig <- readRDS(
+  data_here("00_data", "Figure_Processed_Data", "n_per_group_No_Contig_Splits.RDS")
+)
+pairwise_stats_no_contig <- readRDS(
+  data_here("00_data", "Figure_Processed_Data", "pairwise_stats_No_Contig_Splits.RDS")
+)
+
+write.csv(
+  model_details_no_contig,
+  file = file.path(output_dir, "SupTable_Model_Details_No_Contig_Splits.csv"),
+  row.names = FALSE
+)
+write.csv(
+  n_per_group_no_contig,
+  file = file.path(output_dir, "SupTable_N_Per_Group_No_Contig_Splits.csv"),
+  row.names = FALSE
+)
+write.csv(
+  pairwise_stats_no_contig,
+  file = file.path(output_dir, "SupTable_Pairwise_Stats_No_Contig_Splits.csv"),
+  row.names = FALSE
+)
+
+# ---- Loss-of-Function Analysis ----
+model_details_lof <- readRDS(
+  data_here("00_data", "Figure_Processed_Data", "model_details_Loss_Of_Function.RDS")
+)
+n_per_group_lof <- readRDS(
+  data_here("00_data", "Figure_Processed_Data", "n_per_group_Loss_Of_Function.RDS")
+)
+pairwise_stats_lof <- readRDS(
+  data_here("00_data", "Figure_Processed_Data", "pairwise_stats_Loss_Of_Function.RDS")
+)
+
+write.csv(
+  model_details_lof,
+  file = file.path(output_dir, "SupTable_Model_Details_Loss_Of_Function.csv"),
+  row.names = FALSE
+)
+write.csv(
+  n_per_group_lof,
+  file = file.path(output_dir, "SupTable_N_Per_Group_Loss_Of_Function.csv"),
+  row.names = FALSE
+)
+write.csv(
+  pairwise_stats_lof,
+  file = file.path(output_dir, "SupTable_Pairwise_Stats_Loss_Of_Function.csv"),
+  row.names = FALSE
+)
+
+# ---- Print summaries for verification ----
+cat("\n=== All Data Analysis ===\n")
+cat("Model Details:", nrow(model_details_all_data), "rows\n")
+cat("N Per Group:", nrow(n_per_group_all_data), "rows\n")
+cat("Pairwise Stats:", nrow(pairwise_stats_all_data), "rows\n")
+
+cat("\n=== No Contig Splits Analysis ===\n")
+cat("Model Details:", nrow(model_details_no_contig), "rows\n")
+cat("N Per Group:", nrow(n_per_group_no_contig), "rows\n")
+cat("Pairwise Stats:", nrow(pairwise_stats_no_contig), "rows\n")
+
+cat("\n=== Loss-of-Function Analysis ===\n")
+cat("Model Details:", nrow(model_details_lof), "rows\n")
+cat("N Per Group:", nrow(n_per_group_lof), "rows\n")
+cat("Pairwise Stats:", nrow(pairwise_stats_lof), "rows\n")
+
+cat("\nCSV files have been saved to:\n")
+cat(output_dir, "\n")
+```

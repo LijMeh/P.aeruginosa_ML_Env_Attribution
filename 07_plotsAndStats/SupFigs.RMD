@@ -1,0 +1,1040 @@
+---
+title: "Make Supplemental Figures"
+output: html_document
+date: "2026-04-07"
+---
+
+# Description
+- This code produces the plots for the supplemental figures in the CCS paper. 
+
+# Load Setup and Figure Config 
+```{r setup, include=FALSE}
+library(install.load)
+
+install_load("here")
+
+source(here("config.R"))
+
+source(here("Iterative_Model_Approach", "00_setup.R"))
+
+source(here("Iterative_Model_Approach", "00_functions.R"))
+``` 
+
+# Load Data 
+```{r}
+# ---- Load Metadata ----
+metadata_unmapped <- readRDS(data_here("00_data", "Figure_Processed_Data", "metadata_bronch_fixed.RDS")) %>%
+  mutate(Genome_ID = str_replace_all(Genome_ID, "\\.", "_"))
+
+write.csv(metadata_unmapped, data_here("00_data", "Figure_Processed_Data", "metadata_bronch_fixed.csv"), row.names = FALSE
+)
+# ---- Load Phylogenetic Tree ----
+phylo_tree_30k <- read.tree(data_here("00_data", "Figure_Processed_Data", "parsnp.tree"))
+
+# ---- Load ANI Data ----
+ani_data <- data_here("00_data", "ANI_Clusters/synthetic_group") %>%
+  list.files(pattern = "\\.csv$", full.names = TRUE) %>%
+  purrr::map(~{
+    df <- read_csv(.x)
+    cluster <- str_extract(basename(.x), "\\d+\\.\\d+")
+    colnames(df)[2] <- cluster
+    df
+  }) %>%
+  reduce(full_join, by = colnames(.[[1]])[1])
+
+# ---- Load Category Mappings ----
+source(here("Iterative_Model_Approach", "00_functional_category_mapping.R"))
+
+# ---- Load Blocked Cross Performance Data ----
+blocked_performance_data <- data_here("00_data", "Figure_Processed_Data", "Blocked_Cross_Results") %>%
+  list.files(pattern = "_holdout_stats_newPanaroo\\.csv$", full.names = TRUE) %>%
+  set_names(~str_extract(basename(.), "^[a-z]+") %>% str_to_title()) %>%
+  purrr::map(read.csv) 
+  # Loads everything in the folder, needs to be filtered downstream
+
+# ---- Load "Full" Model Breadth ----
+full_model_breadth_data <- readRDS(data_here("00_data", "Figure_Processed_Data", "full_model_breadth.rds"))
+
+# ---- Load Filtered Metadata ----
+metadata_filtered <- readRDS(data_here("00_data", "Figure_Processed_Data", "Metadata_Filtered.rds"))
+
+probs_long <- readRDS(data_here("00_data", "Figure_Processed_Data", "477_probs_processed.rds"))
+
+# ---- Data ----
+#TODO: NEED TO MOVE RELEVANT BITS TO `06_Process_Data_For_Figures.RMD`
+
+df_pao1 <- load_all_gene_files("00_data/Mutant-Calling-11K-CCS-Top27shap/results/ouputs_for_graphing") %>%
+  mutate(reference = "PAO1", .after = 1)
+
+flat_df_annotated_gene_names <- readRDS(
+  file = data_here("00_data", "Figure_Processed_Data", "flat_df_annotated_gene_names_SHAP_data.RDS")
+)
+
+pa_gene_ids <- read.csv(
+  data_here("00_data", "PAO1_blast_result_new.csv")) %>% as.tibble()
+
+gene_info <- readRDS(
+  file = data_here("00_data", "Figure_Processed_Data", "gene_variant_PA_Annotations.rds")
+)
+
+metadata_mapped <- readRDS(
+  file = data_here("00_data", "Figure_Processed_Data", "metadata_mapped.rds")
+)
+
+cladeB_blocked_confusion_matrix_data <- read.csv(
+  file = data_here("00_data", "Figure_Processed_Data", "test_cannonical_cladeB.csv")
+)
+
+metadata_mapped
+
+stats_df_merged <- df_pao1 %>%
+  left_join(metadata_mapped, by = c("Genome" = "Genome_ID")) %>%
+  dplyr::filter(!is.na(Niche)) %>%
+  filter(Clade == "CladeA") %>%
+  left_join(pa_gene_ids, by = c("gene" = "Locus.Tag")) %>%
+  mutate(
+    Mut_Status = case_when(
+      Mutation == "Contig split" ~ "Alternative function", # CALLING CONTIG SPLIT AS ALT FUNCTION FOR NOW.
+      TRUE ~ as.character(Mut_Status)
+    )
+  )
+
+stats_df_merged_noContigSplits <- df_pao1 %>%
+  left_join(metadata_mapped, by = c("Genome" = "Genome_ID")) %>%
+  dplyr::filter(!is.na(Niche)) %>%
+  filter(Clade == "CladeA") %>%
+  left_join(pa_gene_ids, by = c("gene" = "Locus.Tag")) %>%
+  filter(Mutation != "Contig split")
+
+# ---- Load Clade B Confusion Matrix Data ----
+cladeB_blocked_confusion_matrix_data <- read.csv(data_here("00_data", "Figure_Processed_Data", "test_cannonical_cladeB.csv")) %>%
+  as.tibble()
+```
+
+# Process Data
+```{r}
+# ---- Define Niche Mapping ----
+niche_map <- c(
+  "Bronchiectasis" = "Bronchiectasis",
+  "CF" = "Adult CF",
+  "early.CF" = "Pediatric CF",
+  "Early CF" = "Pediatric CF",
+  "Early.CF" = "Pediatric CF",
+  "Urinary" = "Urinary",
+  "Gastrointestinal" = "Gastrointestinal",
+  "Wound" = "Wound",
+  "Blood" = "Blood",
+  "Aquatic" = "Aquatic",
+  "Ocean" = "Aquatic",
+  "Hospital Environment" = "Hospital",
+  "Hospital.Environment" = "Hospital",
+  "Hospital.Enviornment" = "Hospital",
+  "Rectal/Feces" = "Fecal",
+  "Rectal-Feces" = "Fecal",
+  "Rectal.Feces" = "Fecal"
+)
+
+# ---- Apply to Metadata ----
+metadata_all_clades <- metadata_unmapped %>%
+  mutate(Niche = remap_niches(Niche)) %>%
+  filter(!is.na(Niche))
+
+# ---- Define environment order ----
+env_labels <- c(
+  "Aquatic", "Hospital",
+  "Adult CF", "Pediatric CF", "Bronchiectasis", "Blood", "Urinary", "Fecal", "Wound"
+)
+
+# ---- Organize Niche Data for Confusion Matrix and Rename ----
+cladeB_confusion_matrix_long <- cladeB_blocked_confusion_matrix_data %>%
+  mutate(
+    # Extract individual niche labels from the list strings
+    actual_niches = str_extract_all(True.Labels, "(?<=')[^']+(?=')"),
+    predicted_niches = str_extract_all(Predicted.Labels, "(?<=')[^']+(?=')")
+  ) %>%
+  # Unnest to expand lists into individual rows
+  unnest(cols = c(actual_niches, predicted_niches), 
+         names_sep = "_") %>%
+  rename(
+    Actual_Niche = actual_niches,
+    Predicted_Niche = predicted_niches
+  ) %>%
+  # Remap niche names
+  mutate(
+    Actual_Niche = remap_niches(Actual_Niche),
+    Predicted_Niche = remap_niches(Predicted_Niche)
+  ) %>%
+  # Filter out NAs from remapping
+  filter(!is.na(Actual_Niche), !is.na(Predicted_Niche)) %>%
+  # Now group and summarize
+  group_by(Actual_Niche, Predicted_Niche) %>%
+  summarise(
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  group_by(Actual_Niche) %>%
+  mutate(
+    row_pct = n / sum(n),
+    row_total = sum(n)
+  ) %>%
+  ungroup()
+```
+
+# Make Plots
+
+## Sup Fig 1: Singleton Counts per ANI Level
+```{r}
+# ---- Merge with Metadata ----
+metadata_filtered_prepped <- metadata_filtered %>%
+  mutate(Genome_ID = str_replace_all(Genome_ID, "\\.", "_"))
+
+key_col <- colnames(ani_data)[1]
+merged_data <- left_join(
+  metadata_filtered_prepped, 
+  ani_data, 
+  by = c("Genome_ID" = key_col)
+)
+
+# ---- Reshape to Long Format ----
+ani_long <- merged_data %>%
+  pivot_longer(
+    cols = matches("^\\d+\\.\\d+$"),
+    names_to = "ANI_Cluster",
+    values_to = "ANI_Value"
+  ) %>%
+  filter(!is.na(ANI_Value)) %>%
+  add_count(ANI_Cluster, ANI_Value, name = "value_count") %>%
+  select(-value_count)
+
+# ---- Calculate Niche Diversity per ANI Group ----
+ani_summary <- ani_long %>%
+  filter(!is.na(ANI_Value), !is.na(Niche)) %>%
+  group_by(ANI_Cluster, ANI_Value) %>%
+  summarise(
+    num_unique_niches = pmin(n_distinct(Niche), 9),
+    group_size = n(),
+    .groups = "drop"
+  )
+
+# ---- Filter to Selected ANI Thresholds ----
+ani_keep <- c(99.33, 99.5, 99.75, 99.96, 99.99)
+ani_summary_filtered <- ani_summary %>% 
+  filter(ANI_Cluster %in% ani_keep)
+
+# ---- Calculate Weighted Mean per ANI Threshold ----
+ani_mean_points <- ani_summary_filtered %>%
+  group_by(ANI_Cluster) %>%
+  summarise(
+    mean_niches = weighted.mean(num_unique_niches, group_size),
+    .groups = "drop"
+  )
+
+# ---- Plot ANI vs. ENV Diversity ----
+p.ani_env <- ggplot(
+  ani_summary_filtered, 
+  aes(x = ANI_Cluster, y = num_unique_niches)
+) +
+  geom_jitter(aes(color = group_size), width = 0.2, alpha = 0.8) +
+  scale_color_gradientn(
+    colors = c("#F3E8F0", "#CFA3C2", "#9A4F7F", "#914174", "#883268"),
+    trans = "log10",
+    limits = c(10, 1000),
+    oob = scales::squish,
+    breaks = c(10, 25, 50, 100, 500),
+    labels = c("10", "25", "50", "100", "500"),
+    name = "Samples in group"
+  ) +
+  guides(color = guide_legend(override.aes = list(size = 4))) +
+  geom_point(
+    data = ani_mean_points,
+    aes(x = ANI_Cluster, y = mean_niches),
+    color = "black", 
+    shape = 8, 
+    size = 2, 
+    stroke = 1,
+    inherit.aes = FALSE
+  ) +
+  scale_y_continuous(breaks = 1:9, limits = c(1, 9)) +
+  labs(x = "ANI Cluster", y = "Number of Environments") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 30, vjust = 1, hjust = 1, size = 8),
+    axis.title.x = element_text(margin = margin(t = 15))
+  )
+
+ggsave(
+  filename = data_here("00_data", "Figures", "SupFig1_ANIdepth.png"),
+  plot = p.ani_env,
+  width = 4,
+  height = 3,
+  dpi = 300
+)
+```
+
+## Sup Fig 2: Full Tree (Clades A & B & C)
+```{r}
+#TODO: Fix random mis-labled tip in Clade B
+
+#  ---- Clean Tip Labels ----
+phylo_tree_30k$tip.label <- gsub(".fna$", "", phylo_tree_30k$tip.label)
+
+# ---- Add Outgroup ----
+outgroup_tip <- "PA7_GCA_000017205.1_ASM1720v1_genomic"
+
+metadata_for_join <- metadata_all_clades %>% 
+  select(Genome_ID, Clade, Niche, Genomovar_Cluster, Clone_Cluster) %>%
+  filter(Clade %in% c("CladeA", "CladeB", "CladeC"))
+
+# ---- Remove problematic samples (mislabeled tips) ----
+samples_to_remove <- c("GCA_028683235_1", "GCA_003976125_1", "GCA_039570425_1", "GCA_003055425_1")
+metadata_for_join <- metadata_for_join %>%
+  filter(!(Genome_ID %in% samples_to_remove))
+
+if (!(outgroup_tip %in% metadata_for_join$Genome_ID)) {
+  outgroup_row <- data.frame(
+    Genome_ID = outgroup_tip, 
+    Clade = "Outgroup", 
+    Niche = "Outgroup", 
+    Genomovar_Cluster = "Outgroup", 
+    Clone_Cluster = "Outgroup"
+  )
+  metadata_for_join <- rbind(metadata_for_join, outgroup_row)
+}
+
+metadata_for_join <- metadata_for_join %>% filter(Clade %in% c("CladeA", "CladeB", "CladeC", "Outgroup"))
+
+# ---- Filter and Root Tree ----
+phylo_rooted <- phylo_tree_30k %>%
+  ape::keep.tip(phylo_tree_30k$tip.label[phylo_tree_30k$tip.label %in% metadata_for_join$Genome_ID]) %>%
+  root(outgroup = outgroup_tip, resolve.root = TRUE)
+
+# ---- Remove Outgroup from Tree ----
+outgroup_tips <- as_tibble(phylo_rooted_treedata_bothClades) %>%
+  filter(Clade == "Outgroup") %>%
+  pull(label)
+
+pruned_tree <- ape::drop.tip(phylo_rooted, outgroup_tips)
+
+# ---- Join Metadata to Tree ----
+phylo_rooted_treedata <- as.treedata(pruned_tree)
+
+metadata_for_join_clade <- metadata_for_join %>%
+  mutate(label = Genome_ID) %>%
+  select(label, Clade, Genomovar_Cluster, Clone_Cluster) %>%
+  filter(!is.na(Clade))
+
+phylo_rooted_treedata_bothClades <- left_join(
+  phylo_rooted_treedata,
+  metadata_for_join_clade,
+  by = "label"
+)
+
+metadata_for_join_clade$Clade %>% unique()
+
+# ---- Plot Tree ----
+p.tree_both_clades <- ggtree(phylo_rooted_treedata_bothClades, layout = "rectangular") +
+  geom_tree(color = "grey65", linewidth = 0.3) +
+  geom_tippoint(aes(color = Clade), size = 0.7, alpha = 0.9, na.rm = TRUE) +
+  theme_tree() +
+  theme(legend.position = "right") +
+  scale_color_manual(
+    values = c("CladeA" = "#5D93AE", "CladeB" = "#E36B2E", "CladeC" = "#883268", "Outgroup" = "black"),
+    na.translate = FALSE
+  ) +
+  theme(legend.title = element_blank())
+
+# ---- Save Plot ----
+ggsave(filename = data_here("00_data", "Figures", "SupFig2_FullTree.png"), 
+  plot = p.tree_both_clades, 
+  width = 10, 
+  height = 12)
+
+# ---- Plot Genomovars ----
+
+# Get top 30 genomovars by count
+top30_genomovars <- metadata_for_join_clade %>%
+  count(Genomovar_Cluster, sort = TRUE) %>%
+  slice_head(n = 30) %>%
+  pull(Genomovar_Cluster)
+
+# Add a display column: top 30 keep their label, rest become "Other"
+phylo_rooted_treedata_bothClades <- phylo_rooted_treedata_bothClades %>%
+  mutate(Genomovar_Display = ifelse(Genomovar_Cluster %in% top30_genomovars, Genomovar_Cluster, "Other"))
+
+# Build color vector: top 30 get distinct colors, "Other" gets grey
+top30_colors <- setNames(
+  scales::hue_pal()(30),
+  top30_genomovars
+)
+top30_colors["Other"] <- "grey75"
+
+# Build tree once to extract tip positions
+tree_plot_data <- ggtree(phylo_rooted_treedata_bothClades, layout = "rectangular")$data
+
+# One label tip per top-30 cluster: the tip closest to the cluster's vertical midpoint
+cluster_label_tips <- tree_plot_data %>%
+  filter(isTip, Genomovar_Cluster %in% top30_genomovars) %>%
+  group_by(Genomovar_Cluster) %>%
+  slice_min(abs(y - median(y)), n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+p.tree_genomovar <- ggtree(phylo_rooted_treedata_bothClades, layout = "rectangular") +
+  geom_tree(color = "grey65", linewidth = 0.3) +
+  geom_tippoint(aes(color = Genomovar_Display), size = 0.7, alpha = 0.9, na.rm = TRUE) +
+  scale_color_manual(values = top30_colors, breaks = top30_genomovars) +
+  geom_text(
+    data = cluster_label_tips,
+    aes(x = x, y = y, label = Genomovar_Cluster),
+    hjust = -0.15, size = 2.5,
+    inherit.aes = FALSE
+  ) +
+  theme_tree2() +
+  theme(legend.position = "none")
+
+# ---- Save Plot ----
+ggsave(filename = data_here("00_data", "Figures", "SupFig2_FullTree_Genomovars.png"), 
+  plot = p.tree_genomovar, 
+  width = 10, 
+  height = 12)
+
+##TODO: REMOVE THIS
+
+# Tip-level clade labels currently used for coloring
+tip_tbl <- as_tibble(phylo_rooted_treedata_bothClades)
+
+tip_df <- tip_tbl %>%
+  filter(!is.na(label)) %>%
+  select(label, Clade)
+
+# Get tree and pairwise patristic distances
+tr <- as.phylo(phylo_rooted_treedata_bothClades)
+dmat <- cophenetic(tr)
+
+# For each tip, check agreement with k nearest neighbors
+k <- 20
+tip_outlier_score <- map_dfr(rownames(dmat), function(tip) {
+  nn <- setdiff(rownames(dmat), tip)
+  nn <- nn[order(dmat[tip, nn])][1:k]
+
+  tip_clade <- tip_df$Clade[base::match(tip, tip_df$label)]
+  nn_clade <- tip_df$Clade[base::match(nn, tip_df$label)]
+
+  tibble(
+    label = tip,
+    Clade = tip_clade,
+    same_clade_frac = mean(nn_clade == tip_clade, na.rm = TRUE),
+    nn_majority_clade = names(sort(table(nn_clade), decreasing = TRUE))[1]
+  )
+}) %>%
+  arrange(same_clade_frac)
+
+# Most suspicious tips first
+tip_outlier_score %>% print(n = 30)
+
+# 1 GCA_028683235_1 CladeA            0.15 CladeB           
+# 2 GCA_003976125_1 CladeA            0.15 CladeB           
+# 3 GCA_039570425_1 CladeA            0.15 CladeB           
+# 4 GCA_003055425_1 CladeA            0.15 CladeB   
+
+# Print Clone Details for Clade B
+clone_cluster_summary_B <- metadata_unmapped %>%
+  filter(Clade == "CladeB") %>%
+  group_by(Clone_Cluster) %>%
+  summarise(
+    member_count = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(member_count))
+
+clone_cluster_summary_A <- metadata_unmapped %>%
+  filter(Clade == "CladeA") %>%
+  group_by(Clone_Cluster) %>%
+  summarise(
+    member_count = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(member_count))
+
+# View the results
+print(clone_cluster_summary_A, n = 30) 
+
+# Calculate percentage of SAMPLES in clusters with > 20 members
+sample_pct_over_20_B <- metadata_unmapped %>%
+  filter(Clade == "CladeB") %>%
+  left_join(
+    clone_cluster_summary_B %>% 
+      select(Clone_Cluster, member_count),
+    by = "Clone_Cluster"
+  ) %>%
+  summarise(
+    total_samples = n(),
+    samples_in_clusters_over_20 = sum(member_count > 20),
+    pct_samples_over_20 = (sum(member_count > 20) / n()) * 100
+  )
+
+sample_pct_over_20_A <- metadata_unmapped %>%
+  filter(Clade == "CladeA") %>%
+  left_join(
+    clone_cluster_summary_A %>% 
+      select(Clone_Cluster, member_count),
+    by = "Clone_Cluster"
+  ) %>%
+  summarise(
+    total_samples = n(),
+    samples_in_clusters_over_20 = sum(member_count > 20),
+    pct_samples_over_20 = (sum(member_count > 20) / n()) * 100
+  )
+
+```
+
+## Sup Fig 3: Clade B Blocked Cross
+```{r}
+# ---- Complete Confusion Matrix with All Combinations (Including Zeros) ----
+cladeB_cm_complete <- expand_grid(
+  True = factor(env_labels, levels = env_labels),
+  Pred = factor(env_labels, levels = env_labels)
+) %>%
+  left_join(
+    cladeB_confusion_matrix_long %>%
+      rename(True = Actual_Niche, Pred = Predicted_Niche) %>%
+      mutate(
+        True = factor(True, levels = env_labels),
+        Pred = factor(Pred, levels = env_labels)
+      ),
+    by = c("True", "Pred")
+  ) %>%
+  mutate(
+    n = replace_na(n, 0),
+    row_pct = replace_na(row_pct, 0),
+    row_total = replace_na(row_total, 0),
+    True = factor(True, levels = env_labels),
+    Pred = factor(Pred, levels = env_labels)
+  )
+
+# ---- Plot Confusion Matrix Heatmap ----
+p.cladeB_confusion_matrix <- ggplot(cladeB_cm_complete, aes(x = Pred, y = True, fill = row_pct)) +
+  geom_tile(color = "white", linewidth = 0.8) +
+  geom_text(aes(label = n), size = 3.5, color = "black") +
+  scale_fill_gradient(
+    low = "white", 
+    high = "#883268",
+    limits = c(0, 1), 
+    breaks = seq(0, 0.8, 0.1)
+  ) +
+  labs(
+    x = "Predicted labels",
+    y = "Actual labels",
+    fill = "Proportion of\nRow Total"
+  ) +
+  theme_bw(base_size = 15) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 10),
+    axis.text.y = element_text(size = 10),
+    axis.title.x = element_text(size = 10, margin = margin(t = 20)),
+    axis.title.y = element_text(size = 10),
+    legend.position = "none",
+    panel.grid = element_blank()
+  )
+
+# ---- Calculate Per-Environment Accuracy Metrics ----
+# Get total samples per environment
+total_samples <- sum(cladeB_cm_complete$n)
+class_totals <- cladeB_cm_complete %>%
+  group_by(True) %>%
+  summarise(class_n = sum(n), .groups = "drop") %>%
+  mutate(null_accuracy = (class_n / total_samples) * 100)
+
+cladeB_accuracy_df <- cladeB_cm_complete %>%
+  group_by(True) %>%
+  summarise(
+    correct_n = sum(n * as.numeric(True == Pred)),
+    total_n = sum(n),
+    actual_accuracy = (correct_n / total_n) * 100,
+    .groups = "drop"
+  ) %>%
+  rename(category = True) %>%
+  left_join(
+    class_totals %>% select(True, null_accuracy),
+    by = c("category" = "True")
+  ) %>%
+  pivot_longer(
+    cols = c(actual_accuracy, null_accuracy),
+    names_to = "type",
+    values_to = "accuracy"
+  ) %>%
+  mutate(type = ifelse(type == "actual_accuracy", "actual", "null")) %>%
+  select(category, type, accuracy)
+
+# ---- Plot Accuracy Comparison ----
+accuracy_colors <- c(
+  actual = "#cfa3c2", 
+  null   = "#883268"
+)
+
+p.cladeB_accuracy <- ggplot(cladeB_accuracy_df, aes(x = category, y = accuracy, fill = type, alpha = type)) +
+  geom_col(position = "dodge", width = 0.7) +
+  scale_fill_manual(
+    values = accuracy_colors,
+    labels = c(actual = "Actual Accuracy", null = "Null Accuracy"),
+    name = "Accuracy Type"
+  ) +
+  scale_alpha_manual(values = c(actual = 0.5, null = 1), guide = "none") +
+  coord_flip() +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.35))) +
+  labs(x = NULL, y = "Accuracy (%)") +
+  theme_bw(base_size = 18) +
+  theme(
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.text.x = element_text(size = 10),
+    axis.title.x = element_text(size = 10),
+    axis.title.y = element_text(size = 10),
+    legend.position = "none"
+  )
+
+# ---- Combine Confusion Matrix and Accuracy Plots ----
+p.cladeB_conf_mat_combined <- (p.cladeB_confusion_matrix | p.cladeB_accuracy) + 
+  plot_layout(widths = c(2, 1))
+
+# ---- Save Plot ----
+ggsave(
+  filename = data_here("00_data", "Figures", "SupFig3_ConfusionMatrix_CladeB.png"),
+  plot = p.cladeB_conf_mat_combined,
+  width = 12,
+  height = 6,
+  dpi = 300
+)
+```
+
+## Sup Fig 4: Env Counts per Genomovar
+```{r}
+# ---- Filter to Top 50 Largest Clusters ----
+niche_order <- names(niche_colors)
+
+top_50_clusters <- metadata_filtered %>%
+  count(Genomovar_Cluster, name = "cluster_size") %>%
+  slice_max(cluster_size, n = 50) %>%
+  pull(Genomovar_Cluster)
+
+metadata_filtered_top50 <- metadata_filtered %>%
+  filter(Genomovar_Cluster %in% top_50_clusters)
+
+# ---- Calculate Niche Counts and Prepare Plot Data ----
+
+counts <- metadata_filtered_top50 %>%
+  count(Genomovar_Cluster, Niche, name = "count")
+
+# Order clusters by total count (descending)
+counts_plot <- counts %>%
+  mutate(
+    Genomovar_Cluster = fct_reorder(Genomovar_Cluster, count, .fun = sum, .desc = TRUE),
+    Niche = factor(Niche, levels = niche_order)
+  )
+
+genomovar_order <- levels(counts_plot$Genomovar_Cluster)
+
+# Create complete grid for heatmap (fills missing combinations with 0)
+counts_complete <- counts %>%
+  complete(Genomovar_Cluster, Niche, fill = list(count = 0)) %>%
+  mutate(
+    fill_var = if_else(count > 0, as.character(Niche), NA_character_),
+    Niche = factor(Niche, levels = rev(niche_order)),
+    Genomovar_Cluster = factor(Genomovar_Cluster, levels = genomovar_order)
+  )
+
+
+
+# ---- Top Panel: Stacked Bar Chart ----
+
+p.genomovar_dist <- ggplot(counts_plot, aes(x = Genomovar_Cluster, y = count, fill = Niche)) +
+  geom_col(position = "stack") +
+  scale_fill_manual(values = niche_colors, name = "Env") +
+  theme_bw(base_size = 14) +
+  labs(x = "Genomovar Cluster", y = "Env Abundance") +
+  theme(
+    axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5),
+    #axis.ticks.x = element_blank(),
+    #axis.title.x = element_blank(),
+    axis.line.x = element_line(),
+    plot.margin = margin(0, 0, 0, 0)#,
+    #legend.position = "none"
+  )
+
+# ---- Bottom Panel: Presence/Absence Heatmap ----
+
+p.niche_dist <- ggplot(counts_complete, aes(Genomovar_Cluster, Niche)) +
+  geom_tile(aes(fill = fill_var), color = "white", width = 0.95, height = 0.95) +
+  scale_fill_manual(values = niche_colors, na.value = "white", name = "Niche") +
+  theme_bw(base_size = 14) +
+  labs(x = NULL, y = "Env Presence") +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.line.x = element_blank(),
+    axis.title.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    panel.grid = element_blank(),
+    legend.position = "none",
+    plot.margin = margin(0, 0, 0, 0)
+  )
+
+# ---- Create Legend ----
+
+legend_grob <- cowplot::get_legend(
+  ggplot(counts_plot, aes(x = Genomovar_Cluster, y = count, fill = Niche)) +
+    geom_col() +
+    scale_fill_manual(values = niche_colors, name = "Env") +
+    theme_bw(base_size = 14) +
+    theme(legend.position = "right")
+)
+
+# ---- Combine Panels ----
+
+p.GenomovarDistribution <- p.genomovar_dist / p.niche_dist + plot_layout(heights = c(3, 2))
+
+ggsave(
+  filename = data_here("00_data", "Figures", "SupFig4_GenomovarDistribution.png"),
+  plot = p.GenomovarDistribution,
+  width = 15,
+  height = 8,
+  dpi = 300
+)
+
+ggsave(
+  filename = data_here("00_data", "Figures", "SupFig4_GenomovarDistribution_Part1.png"),
+  plot = p.genomovar_dist,
+  width = 15,
+  height = 8,
+  dpi = 300
+)
+```
+
+## Sup Fig 5: Model Performance per Env Grouping
+```{r}
+niche_colors_all = c(
+  # === Level 1: Broad Categories ===
+  "Host Associated"       = "#CB6650",
+  "Environmental"         = "#72854E",
+  
+  # === Level 2: Primary Subgroups ===
+  # Under Host Associated
+  "Human"                 = "#D26749",
+    "Other Clinical"                 = "#D26749",
+  "Animal"                = "#B89C8D",
+  
+  # Under Environmental
+  "Natural Environment"   = "#879667",
+  "Human-Impacted Environment" = "#656565",
+  
+  # === Level 3: Secondary Subgroups ===
+  # Under Human (Host Associated > Human)
+  "Internal"              = "#B6502B",
+  "External"              = "#C36557",
+  "Respiratory"           = "#D4622D",
+  "Other Internal"        = "#B6502B",
+  
+  # Under Natural Environment (Environmental > Natural)
+  "Terrestrial"           = "#9CA780",
+  "Aquatic"               = "#9CBED2",
+  "Ocean"                 = "#5D93AE",
+  
+  # Under Human-Impacted Environment (Environmental > HumanImpacted)
+  "Built Environment"     = "#8C8C8C",
+  "Hospital"  = "#727272",
+  "Waste Water"           = "#7F7F7F",
+  
+  # === Level 4: Specific Niches ===
+  # Under Respiratory (Host Associated > Human > Respiratory)
+  "Lung"                  = "#D4622D",
+  "Other Lung"                  = "#D4622D",
+  "Bronchiectasis"        = "#E36B2E",
+  "Pneumonia"             = "#F28D32",
+  "CF"                    = "#F3BA36",
+  "Adult CF"                    = "#F3BA36",
+  "Pediatric CF"              = "#F7D074",
+  
+  # Under Internal (Host Associated > Human > Internal)
+  "Urinary"               = "#A8441B",
+  "Gastrointestinal"      = "#944432",
+  "Blood"                 = "#7F4348",
+  "Rectal/Feces"          = "#4B2324",
+  "Fecal"          = "#4B2324",
+  
+  # Under External (Host Associated > Human > External)
+  "Wound"                 = "#C57066",
+  "Burn"                  = "#CA9192",
+  "Eye"                   = "#E3C5C5"
+)
+
+
+blocked_performance_data <- data_here("00_Panaroo_100_UCF", "Blocked_Cross_Results") %>%
+  list.files(pattern = "_holdout_stats_newPanaroo\\.csv$", full.names = TRUE) %>%
+  set_names(~str_extract(basename(.), "^[a-z]+") %>% str_to_title()) %>%
+  purrr::map(read.csv) 
+  # Loads everything in the folder, needs to be filtered downstream
+
+# ---- Helper Function: Apply Niche Mapping to Label Strings ----
+remap_labels <- function(label_string, niche_map) {
+  result <- label_string
+  for (old_name in names(niche_map)) {
+    new_name <- niche_map[[old_name]]
+    old_pattern <- paste0("'", old_name, "'")
+    new_replacement <- paste0("'", new_name, "'")
+    result <- gsub(old_pattern, new_replacement, result, fixed = TRUE)
+  }
+  return(result)
+}
+
+# ---- Apply to Performance Data (rename in True/Predicted Labels) ----
+blocked_performance_data <- lapply(blocked_performance_data, function(df) {
+  df %>%
+    mutate(
+      True.Labels = remap_labels(True.Labels, niche_map),
+      Predicted.Labels = remap_labels(Predicted.Labels, niche_map)
+    )
+})
+
+# ---- Filter: select which models to include ----
+models_to_include <- c("First", "Eighth", "Ninth", "Tenth", "Eleventh", "Twelfth")
+
+# ---- Parse label strings and compute per-niche accuracy ----
+parse_labels <- function(label_string) {
+  stringr::str_extract_all(label_string, "(?<=')[^']+(?=')")[[1]]
+}
+
+model_order <- c("First", "Eighth", "Ninth", "Tenth", "Eleventh", "Twelfth")
+
+# rename map: old -> new
+model_name_map <- c(
+  "First"    = "Round 1",
+  "Eighth"   = "Round 2",
+  "Ninth"    = "Round 3",
+  "Tenth"    = "Round 4",
+  "Eleventh" = "Round 6",
+  "Twelfth"  = "Round 5"
+)
+
+env_accuracy_all <- blocked_performance_data %>%
+  .[intersect(model_order, names(.))] %>%
+  purrr::imap_dfr(function(df, model_name) {
+    df %>%
+      calc_env_accuracy(blocked = TRUE) %>%
+      calc_normalized_accuracy() %>%
+      mutate(
+        ENV = ifelse(ENV == "Gastrointestinal", "Rectal/Feces", ENV),
+        ENV = ifelse(ENV == "Rectal/Feces", "Fecal", ENV),
+        ENV = ifelse(ENV == "CF", "Adult CF", ENV),
+        ENV = ifelse(ENV == "Early CF", "Pediatric CF", ENV),
+        ENV = ifelse(ENV == "Hospital Environment", "Hospital", ENV),
+        Model = model_name
+      )
+  }) %>%
+  mutate(
+    Model = factor(Model, levels = model_order),
+    Model_Display = recode(as.character(Model), !!!model_name_map),
+    ENV = factor(ENV, levels = names(niche_colors))
+    #Model_Display = factor(Model_Display, levels = unname(model_name_map[model_order]))
+  )
+
+# ---- Plot ----
+p.blocked_niche_accuracy <- ggplot(env_accuracy_all, aes(x = ENV, y = accuracy, fill = ENV)) +
+  geom_col() +
+  geom_text(aes(label = scales::percent(accuracy, accuracy = 1)),
+            vjust = -0.4, size = 3) +
+  scale_fill_manual(values = niche_colors_all) +
+  scale_y_continuous(labels = scales::percent, limits = c(0, 1.15), expand = c(0, 0)) +
+  facet_wrap(~Model_Display, ncol = 3) +
+  labs(x = NULL, y = "Per-Environment Normalized Accuracy") +
+  theme_bw(base_size = 13) +
+  theme(
+    axis.text.x  = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 9),
+    legend.position = "none",
+    strip.text   = element_text(face = "bold", size = 11),
+    panel.spacing = unit(1, "lines")
+  )
+
+p.blocked_niche_accuracy
+
+ggsave(
+  filename = data_here("00_data", "Figures", "SupFig5_Niche_Accuracy.png"),
+  plot = p.blocked_niche_accuracy,
+  width = 15,
+  height = 8,
+  dpi = 300
+)
+
+```
+
+## Sup Fig 6: Per Env ML Model Probability Distributions
+```{r}
+# Identify focal environment per sample from REAL metadata
+probs_summary <- probs_long %>%
+  left_join(
+    metadata_mapped %>% 
+      select(Genome_ID, Niche) %>% 
+      rename(Genome_IDs = Genome_ID, Focal_Env = Niche),
+    by = "Genome_IDs"
+  )
+
+#---- Histogram of Probability Distributions by Focal_Env ----
+probs_summary$Env <- factor(probs_summary$Env, levels = env_order)
+probs_summary$Focal_Env <- factor(probs_summary$Focal_Env, levels = env_order)
+
+p.prob_dist <- ggplot(probs_summary, aes(x = Probability, fill = Env)) +
+  geom_histogram(position = "dodge", bins = 10, alpha = 1) +
+  facet_wrap(~Focal_Env, ncol = 3, scales = "free_y") +
+  scale_fill_manual(values = niche_colors) +
+  labs(
+    x = "Probability",
+    y = "Frequency",
+    fill = "Environment",
+    title = "Probability Distributions by Focal Environment"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text = element_text(size = 9),
+    axis.title = element_text(size = 10),
+    strip.text = element_text(size = 10, face = "bold")
+  )
+
+# ---- Save the plot ----
+ggsave(
+  filename = data_here("00_data", "Figures", "SupFig6_Prob_Distributions.png"),
+  plot = p.prob_dist,
+  width = 12,
+  height = 10,
+  dpi = 300
+)
+```
+
+## Sup Fig 7: Loss of Function Mutations for Relevant Genes
+```{r}
+niche_colors <- c(
+  "Aquatic"        = "#9CBED2",
+  "Hospital"       = "#727272",
+  "Adult CF"       = "#F3BA36",
+  "Pediatric CF"   = "#F7D074",
+  "Bronchiectasis" = "#E36B2E",
+  "Blood"          = "#7F4348",
+  "Urinary"        = "#A8441B",
+  "Fecal"          = "#B89C8D",
+  "Wound"          = "#C57066"
+)
+###TODO: These depend on data and functions from:
+# /home/emehlferber3/02_Github/Env_XGBoost/Iterative_Model_Approach/02_Make_Figures/Fig3_Update/Fig3_TopGenesStatistics.R
+# Pull thos and put into main function script, etc. 
+
+stats_df_merged_lof <- stats_df_merged %>%
+  mutate(
+    case_when(
+      Mut_Status == "No function" ~ "No function",
+      Mut_Status != "No function" ~ "Functional",
+      TRUE ~ NA_character_
+    ))
+
+lof_glmer_results <- run_glmer_analysis(
+  df_input = stats_df_merged_lof,
+  reference_name = "PAO1",
+  random_effect_var = c("Genomovar_Cluster"),
+  niche_ref = "Adult CF",
+  mut_wt_values = c("Functional"),
+  mut_case_values = c("No function"),
+  genes_to_analyze = top_genes
+)
+
+lof_cld_plot <- plot_mutation_probabilities_cld(
+  glmer_results = lof_glmer_results,
+  genes = top_genes,
+  niche_colors = niche_colors,
+  ncol = 3
+)
+
+ggsave(
+  filename = data_here("00_data", "Figures", "SupFig7_LossOfFunction_MutationProbabilities_CLD.png"),
+  plot = lof_cld_plot$plot,
+  width = 7,
+  height = 4,
+  dpi = 300
+)
+```
+
+## Sup Fig 8: Percentage Loss of Function per Gene per Env
+```{r}
+gene_mutation_summary <- stats_df_merged %>%
+  filter(gene %in% top_genes) %>%
+  group_by(gene, Niche, Gene.Name) %>%
+  summarise(
+    Total = n(),
+    Mutated = sum(Mut_Status == "No function", na.rm = TRUE),
+    Mutation_Rate = Mutated / Total,
+    .groups = "drop"
+  ) %>%
+  mutate(
+    gene = factor(gene, levels = top_genes),
+    Niche = factor(Niche, levels = names(niche_colors)),
+    Gene_Label = ifelse(is.na(Gene.Name) | Gene.Name == "", as.character(gene), as.character(Gene.Name))
+  ) %>%
+  arrange(gene, Niche) %>%
+  mutate(Gene_Label = factor(Gene_Label, levels = unique(Gene_Label))) %>%
+  as_tibble()
+
+mutation_rate_plot <- ggplot(gene_mutation_summary, aes(x = Niche, y = Mutation_Rate, fill = Niche)) +
+  geom_col(width = 0.75, color = "white", linewidth = 0.2) +
+  facet_wrap(~ Gene_Label, ncol = 3) +
+  scale_fill_manual(values = niche_colors, drop = FALSE) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1),
+    limits = c(0, 1),
+    expand = ggplot2::expansion(mult = c(0, 0.05))
+  ) +
+  labs(
+    x = "Environment",
+    y = "Observed loss-of-function rate"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 35, hjust = 1),
+    legend.position = "none",
+    panel.grid.minor = element_blank(),
+    strip.text = element_text(face = "bold")
+  )
+
+ggsave(
+  filename = data_here("00_data", "Figures", "SupFig8_PercentageLossOfFunction_PerGene_PerEnv.png"),
+  plot = mutation_rate_plot,
+  width = 7,
+  height = 4,
+  dpi = 300
+)
+```
+
+## Sup Fig 9: Mutation probabilities with Contig Splits Removed
+```{r}
+glmer_results_noContigSplits <- run_glmer_analysis(
+  df_input = stats_df_merged_noContigSplits,
+  reference_name = "PAO1",
+  random_effect_var = c("Genomovar_Cluster"),
+  niche_ref = "Adult CF",
+  mut_wt_values = c("Functional"),
+  mut_case_values = NULL,
+  genes_to_analyze = top_genes
+)
+
+noContigSplits_cld_plot <- plot_mutation_probabilities_cld(
+  glmer_results = glmer_results_noContigSplits,
+  genes = top_genes,
+  niche_colors = niche_colors,
+  ncol = 3
+)
+
+ggsave(
+  filename = data_here("00_data", "Figures", "SupFig9_Mutation_Probabilities_NoContigSplits.png"),
+  plot = noContigSplits_cld_plot$plot,
+  width = 7,
+  height = 4,
+  dpi = 300
+)
+```
+
+
