@@ -13,11 +13,11 @@ library(install.load)
 
 install_load("here")
 
-source(here("config.R"))
+source(here("00_R_configs", "config.R"))
 
-source(here("Iterative_Model_Approach", "00_setup.R"))
+source(here("00_R_configs", "00_setup.R"))
 
-source(here("Iterative_Model_Approach", "00_functions.R"))
+source(here("00_R_configs", "00_functions.R"))
 ``` 
 
 # Load Data 

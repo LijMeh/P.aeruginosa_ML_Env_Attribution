@@ -8,9 +8,9 @@ install_load("here")
 
 # ---- Load configuration and setup ----
 source(here("config.R"))
-source(here("Figures_4th_Draft", "00_Setup.R"))
-source(here("Figures_4th_Draft", "00_color_palette.R"))
-source(here("Figures_4th_Draft", "00_functions.R"))
+source(here("00_R_configs", "00_Setup.R"))
+source(here("00_R_configs", "00_color_palette.R"))
+source(here("00_R_configs", "00_functions.R"))
 
 # ---- Load Processed Data ----
 final_model_performance_data_processed <- readRDS(data_here("00_data", "Figure_Processed_Data", "Final_Model_Performance_Data_Processed.RDS"))

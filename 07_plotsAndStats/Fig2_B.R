@@ -8,16 +8,16 @@ install_load("here")
 
 # ---- Load configuration and setup ----
 source(here("config.R"))
-source(here("Figures_4th_Draft", "00_Setup.R"))
-source(here("Figures_4th_Draft", "00_color_palette.R"))
-source(here("Figures_4th_Draft", "00_functions.R"))
+source(here("00_R_configs", "00_Setup.R"))
+source(here("00_R_configs", "00_color_palette.R"))
+source(here("00_R_configs", "00_functions.R"))
 
 # ---- Load Processed Data ----
 roc_data <- readRDS(data_here("00_data", "Figure_Processed_Data", "477_roc_data_processed.rds"))
 
 probs_long <- readRDS(data_here("00_data", "Figure_Processed_Data", "477_probs_processed.rds"))
 
-metadata_unmapped <- readRDS(data_here("00_Universal", "metadata_bronch_fixed.RDS")) %>%
+metadata_unmapped <- read.csv(data_here("00_data", "blockedModelInputMetadata.csv")) %>%
   mutate(Genome_ID = str_replace_all(Genome_ID, "\\.", "_"))
 
 niche_map <- c(

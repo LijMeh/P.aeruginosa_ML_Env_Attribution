@@ -45,9 +45,9 @@ ani_data <- data_here("/00_data/fastANI_output", "ANI_clusters") %>%
   reduce(full_join, by = colnames(.[[1]])[1])
 
 # ---- Load Metadata ----
-metadata <- read.csv(data_here("00_data", "blockedModelInputMetadata.csv"))
+metadata_unmapped <- read.csv(data_here("00_data", "blockedModelInputMetadata.csv"))
 
-genomes_in_train <- metadata %>%
+genomes_in_train <- metadata_unmapped %>%
   filter(split == "Train") %>%
   pull(Genome_ID) %>%
   unique()

@@ -13,11 +13,11 @@ library(install.load)
 
 install_load("here")
 
-source(here("config.R"))
+source(here("00_R_configs", "config.R"))
 
-source(here("Iterative_Model_Approach", "00_setup.R"))
+source(here("00_R_configs", "00_setup.R"))
 
-source(here("Iterative_Model_Approach", "00_functions.R"))
+source(here("00_R_configs", "00_functions.R"))
 ``` 
 
 # Load Data 
@@ -43,7 +43,7 @@ ani_data <- data_here("00_data", "ANI_Clusters/synthetic_group") %>%
   reduce(full_join, by = colnames(.[[1]])[1])
 
 # ---- Load Category Mappings ----
-source(here("Iterative_Model_Approach", "00_functional_category_mapping.R"))
+source(here("00_R_configs", "00_functional_category_mapping.R"))
 
 # ---- Load Blocked Cross Performance Data ----
 blocked_performance_data <- data_here("00_data", "Figure_Processed_Data", "Blocked_Cross_Results") %>%
@@ -922,7 +922,7 @@ niche_colors <- c(
   "Wound"          = "#C57066"
 )
 ###TODO: These depend on data and functions from:
-# /home/emehlferber3/02_Github/Env_XGBoost/Iterative_Model_Approach/02_Make_Figures/Fig3_Update/Fig3_TopGenesStatistics.R
+# /home/emehlferber3/02_Github/Env_XGBoost/00_R_configs/02_Make_Figures/Fig3_Update/Fig3_TopGenesStatistics.R
 # Pull thos and put into main function script, etc. 
 
 stats_df_merged_lof <- stats_df_merged %>%

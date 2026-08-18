@@ -8,9 +8,9 @@ install_load("here")
 
 # ---- Load configuration and setup ----
 source(here("config.R"))
-source(here("Iterative_Model_Approach", "00_setup.R"))
-source(here("Iterative_Model_Approach", "00_color_palette.R"))
-source(here("Iterative_Model_Approach", "00_functions.R"))
+source(here("00_R_configs", "00_setup.R"))
+source(here("00_R_configs", "00_color_palette.R"))
+source(here("00_R_configs", "00_functions.R"))
 
 # ---- Data ----
 
